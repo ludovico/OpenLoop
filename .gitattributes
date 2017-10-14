@@ -16,4 +16,4 @@
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
 
-/Builds export-ignore
+Builds/**/* export-ignore
