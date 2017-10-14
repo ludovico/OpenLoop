@@ -14,7 +14,7 @@
   </MAINGROUP>
   <EXPORTFORMATS>
     <VS2017 targetFolder="Builds/VisualStudio2017" windowsTargetPlatformVersion="10.0.14393.0"
-            vst3Folder="" externalLibraries="c:\code\lua\bin\lua53.lib">
+            vst3Folder="" externalLibraries="c:\code\lua\bin\lua53.lib" extraCompilerFlags="/bigobj">
       <CONFIGURATIONS>
         <CONFIGURATION name="Debug" winWarningLevel="4" generateManifest="1" winArchitecture="x64"
                        isDebug="1" optimisation="1" targetName="OpenLoop" headerPath="C:\code\SDKs\ASIOSDK2.3\common&#10;c:\code\lua\bin\include"

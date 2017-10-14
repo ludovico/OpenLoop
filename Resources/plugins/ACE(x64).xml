@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="ACE(x64)" descriptiveName="ACE" format="VST" category="Synth"
+        manufacturer="u-he" version="V1.4.0" file="C:\Program Files\VSTPlugIns\ACE(x64).dll"
+        uid="61634555" isInstrument="1" fileTime="14fbf129818" infoUpdateTime="15f1bbcf2bd"
+        numInputs="1" numOutputs="1" isShell="0"/>
