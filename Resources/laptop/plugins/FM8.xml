@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="FM8" format="VST" category="Synth" manufacturer="Native Instruments GmbH"
+        version="V1.4.1" file="C:\Program Files\Native Instruments\VSTPlugins 64 bit\FM8.dll"
+        uid="4e696638" isInstrument="1" fileTime="15085e98370" infoUpdateTime="15f25338073"
+        numInputs="0" numOutputs="2" isShell="0"/>

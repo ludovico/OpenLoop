@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Dexed" format="VST" category="Synth" manufacturer="Digital Suburban"
+        version="V1.0.0" file="C:\Program Files\VSTPlugins\Dexed.dll"
+        uid="44657864" isInstrument="1" fileTime="15da85206dc" infoUpdateTime="15f25334fff"
+        numInputs="0" numOutputs="2" isShell="0"/>

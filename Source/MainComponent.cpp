@@ -8,10 +8,73 @@
 
 #pragma warning (disable : 4100)
 
+String getMachine() {
+	if (File{ "c:/samples" }.exists()) {
+		return "laptop";
+	} else {
+		return "desktop";
+	}
+}
+
+void savePluginXml(String path) {
+	VSTPluginFormat vstPluginFormat;
+	OwnedArray<PluginDescription> plugindescs;
+	vstPluginFormat.findAllTypesForFile(plugindescs, path);
+	for (auto pd : plugindescs) {
+		auto xml = pd->createXml();
+		File filepath{ path };
+
+		auto newFile = getMachine() == "desktop" ? 
+			File{ "C:/Users/User/Documents/OpenLoop/Resources/plugins/" + filepath.getFileNameWithoutExtension() + ".xml" } :
+			File{ "C:/code/c++/juce/OpenLoop/Resources/laptop/plugins/" + filepath.getFileNameWithoutExtension() + ".xml" };
+
+		auto res = xml->writeToFile(newFile, "");
+		std::cout << res << std::endl;
+	}
+}
+
+void saveLaptopPlugins() {
+	savePluginXml("C:/Program Files/VSTPlugins/Dexed.dll");
+	//savePluginXml("C:/Program Files/Steinberg/VSTPlugins/FalconVSTx64.dll"); why?
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Battery 4.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/FM8.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Massive.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/RC 48.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Guitar Rig 5.dll");
+}
+
+void saveDesktopPlugins() {
+	// U-HE
+	savePluginXml("C:/Program Files/VSTPlugIns/ACE(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Bazille(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Diva(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Filterscape(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/FilterscapeQ6(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/FilterscapeVA(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Hive(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/ACE(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/MFM2(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Presswerk(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Protoverb(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Runciter(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Satin(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Zebra(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/ZRev(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-A(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-D(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-F(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-G(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-P(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-Q(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-S(x64).dll");
+	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-T(x64).dll");
+	
+}
+
 class PluginWindow : public DocumentWindow {
 public:
 	PluginWindow()
-	:DocumentWindow ("no plugin", Colour::fromHSV(0.0, 0.0, 0.0, 1.0), DocumentWindow::minimiseButton) {
+		:DocumentWindow("no plugin", Colour::fromHSV(0.0, 0.0, 0.0, 1.0), DocumentWindow::minimiseButton) {
 		setSize(100, 100);
 		setTopLeftPosition(0, 600);
 		setVisible(true);
@@ -34,19 +97,6 @@ public:
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginWindow)
 };
-
-void savePluginXml(String path) {
-	VSTPluginFormat vstPluginFormat;
-	OwnedArray<PluginDescription> plugindescs;
-	vstPluginFormat.findAllTypesForFile(plugindescs, path);
-	for (auto pd : plugindescs) {
-		auto xml = pd->createXml();
-		File filepath{ path };
-		File newFile{ "C:/Users/User/Documents/OpenLoop/Resources/plugins/" + filepath.getFileNameWithoutExtension() + ".xml" };
-		auto res = xml->writeToFile(newFile, "");
-		std::cout << res << std::endl;
-	}
-}
 
 class TCPServer : public Thread {
 public:
@@ -79,38 +129,16 @@ public:
 	StreamingSocket serverSocket;
 };
 
+auto constructMidiEventsFromCollectionWithinBufferRange = [](MidiBuffer* midiBuffer, double time, int numSamples) {
+
+};
+
 class MainContentComponent : public AudioAppComponent {
 public:
 	MainContentComponent() {
 		setSize(100, 100);
 		setTopLeftPosition(0, 700);
 		setAudioChannels(2, 2);
-
-		// U-HE
-		//savePluginXml("C:/Program Files/VSTPlugIns/ACE(x64).dll");
-		/*vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Bazille(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Diva(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Filterscape(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/FilterscapeQ6(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/FilterscapeVA(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Hive(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/ACE(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/MFM2(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Presswerk(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Protoverb(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Runciter(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Satin(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Zebra(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/ZRev(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-A(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-D(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-F(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-G(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-P(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-Q(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-S(x64).dll");
-		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-T(x64).dll");
-		*/
 
 		lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::math, sol::lib::os);
 
