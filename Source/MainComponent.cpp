@@ -10,14 +10,26 @@
 
 class PluginWindow : public DocumentWindow {
 public:
-	PluginWindow(AudioProcessorEditor* pluginEditor)
-	:DocumentWindow (pluginEditor->getName(), Colour::fromHSV(0.4, 0.4, 0.6, 1.0), DocumentWindow::minimiseButton | DocumentWindow::closeButton) {
-		setSize(400, 300);
-		setContentOwned(pluginEditor, true);
+	PluginWindow()
+	:DocumentWindow ("no plugin", Colour::fromHSV(0.0, 0.0, 0.0, 1.0), DocumentWindow::minimiseButton) {
+		setSize(100, 100);
+		setTopLeftPosition(0, 600);
 		setVisible(true);
 	}
 
-	void closeButtonPressed() override { delete this; }
+	void clear() {
+		clearContentComponent();
+		setSize(100, 100);
+		setName("no plugin");
+	}
+
+	void setEditor(AudioProcessorEditor* editor) {
+		clear();
+		if (editor != nullptr) {
+			setName(editor->getName());
+			setContentNonOwned(editor, true);
+		}
+	}
 
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginWindow)
@@ -70,11 +82,10 @@ public:
 class MainContentComponent : public AudioAppComponent {
 public:
 	MainContentComponent() {
-		setSize(400, 300);
+		setSize(100, 100);
+		setTopLeftPosition(0, 700);
 		setAudioChannels(2, 2);
 
-		VSTPluginFormat vstPluginFormat;
-		OwnedArray<PluginDescription> plugindescs;
 		// U-HE
 		//savePluginXml("C:/Program Files/VSTPlugIns/ACE(x64).dll");
 		/*vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Bazille(x64).dll");
@@ -100,11 +111,11 @@ public:
 		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-S(x64).dll");
 		vstPluginFormat.findAllTypesForFile(plugindescs, "C:/Program Files/VSTPlugIns/Uhbik-T(x64).dll");
 		*/
-		std::cout << plugindescs.size() << std::endl;
 
 		lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::math, sol::lib::os);
 
 		lua.set("deviceManager", &deviceManager);
+		lua.set("pluginWindow", &pluginWindow);
 		
 		lua.new_usertype<AudioDeviceManager>(
 			"AudioDeviceManager", sol::constructors<>(),
@@ -112,7 +123,11 @@ public:
 			"getCpuUsage", &AudioDeviceManager::getCpuUsage,
 			"createStateXml", &AudioDeviceManager::createStateXml,
 			"playTestSound", &AudioDeviceManager::playTestSound,
-			"addAudioCallback", &AudioDeviceManager::addAudioCallback
+			"addAudioCallback", &AudioDeviceManager::addAudioCallback,
+			"removeAudioCallback", &AudioDeviceManager::removeAudioCallback,
+			"addMidiInputCallback", &AudioDeviceManager::addMidiInputCallback,
+			"removeMidiInputCallback", &AudioDeviceManager::removeMidiInputCallback,
+			"setMidiInputEnabled", &AudioDeviceManager::setMidiInputEnabled
 			);
 
 		lua.new_usertype<AudioFormatReaderSource>(
@@ -165,11 +180,7 @@ public:
 			"Colour", sol::constructors<Colour(), Colour(float, float, float, float)>()
 			);
 
-		lua.set_function("createEditorWindow", [](String name) { MessageManager::callAsync([&]() { new DocumentWindow(name, Colour{}, 6, true); }); });
-
-		lua.new_usertype<PluginWindow>(
-			"PluginWindow", sol::constructors<PluginWindow(AudioProcessorEditor*)>()
-			);
+		/*lua.set_function("createEditorWindow", [](String name) { MessageManager::callAsync([&]() { new DocumentWindow(name, Colour{}, 6, true); }); });*/
 
 		/*lua.new_usertype<DocumentWindow>(
 			"DocumentWindow", sol::constructors<DocumentWindow(String, Colour, int, bool)>(),
@@ -258,12 +269,32 @@ public:
 			"recreateFromXml", &KnownPluginList::recreateFromXml
 			);
 
+		lua.set_function("MidiInputGetDevices", MidiInput::getDevices);
+		lua.set_function("MidiInputOpenDevice", MidiInput::openDevice);
+
+		lua.new_usertype<MidiInput>(
+			"MidiInput", sol::constructors<>(),
+			"getName", &MidiInput::getName,
+			"start", &MidiInput::start,
+			"stop", &MidiInput::stop
+			);
+
+		lua.new_usertype<MidiKeyboardState>(
+			"MidiKeyboardState", sol::constructors<MidiKeyboardState()>(),
+			"reset", &MidiKeyboardState::reset,
+			"allNotesOff", &MidiKeyboardState::allNotesOff,
+			"addListener", &MidiKeyboardState::addListener,
+			"removeListener", &MidiKeyboardState::removeListener
+			);
+
 		lua.set_function("noteOn", [](int ch, int noteNum, uint8 vel) { return MidiMessage::noteOn(ch, noteNum, vel); });
 		lua.set_function("noteOff", [](int ch, int noteNum, uint8 vel) { return MidiMessage::noteOff(ch, noteNum, vel); });
 		
 		lua.new_usertype<MidiMessage>(
 			"MidiMessage", sol::constructors<MidiMessage(), MidiMessage(int, int, int, double)>(),
 			"getTimeStamp", &MidiMessage::getTimeStamp,
+			"setTimeStamp", &MidiMessage::setTimeStamp,
+			"addToTimeStamp", &MidiMessage::addToTimeStamp,
 			"getNoteNumber", &MidiMessage::getNoteNumber,
 			"getVelocity", &MidiMessage::getVelocity,
 			"isNoteOn", &MidiMessage::isNoteOn,
@@ -303,6 +334,12 @@ public:
 			"numInputChannels", &PluginDescription::numInputChannels,
 			"numOutputChannels", &PluginDescription::numOutputChannels,
 			"hasSharedContainer", &PluginDescription::hasSharedContainer
+			);
+
+		lua.new_usertype<PluginWindow>(
+			"PluginWindow", sol::constructors<>(),
+			"clear", &PluginWindow::clear,
+			"setEditor", &PluginWindow::setEditor
 			);
 
 		lua.new_usertype<SoundPlayer>(
@@ -364,15 +401,10 @@ public:
 		instance = apfm->createPluginInstance(pd, 44100, 480, errorstring);
 		applayer.setProcessor(instance);
 		deviceManager.addAudioCallback(&applayer);
-		editor = instance->createEditorIfNeeded();
+		editor = instance->createEditorIfNeeded();*/
 		
-		pluginwindow = new PluginWindow{ editor };
-		pluginwindow->toFront(true);*/
-		//docwindow.setSize(500, 500);
-		//docwindow.setContentOwned(editor, true);
-		//docwindow.setVisible(true);
-		//docwindow.toFront(true);
-
+		
+		pluginWindow.toFront(true);
 		tcpServer.startThread();
 	}
 
@@ -402,6 +434,7 @@ public:
 	
 	sol::state lua;
 	TCPServer tcpServer{ lua };
+	PluginWindow pluginWindow;
 
 	/*AudioPluginInstance* instance;
 	AudioProcessorEditor* editor;
