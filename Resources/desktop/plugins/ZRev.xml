@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="ZRev(x64)" descriptiveName="ZRev" format="VST" category="Effect"
+        manufacturer="u-he" version="V2.7.1" file="C:\Program Files\VSTPlugIns\ZRev(x64).dll"
+        uid="72655630" isInstrument="0" fileTime="14ff844f180" infoUpdateTime="15f2bc46421"
+        numInputs="1" numOutputs="1" isShell="0"/>

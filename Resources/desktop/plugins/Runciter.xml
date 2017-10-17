@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Runciter(x64)" descriptiveName="Runciter" format="VST"
+        category="Effect" manufacturer="u-he" version="V1.3.1" file="C:\Program Files\VSTPlugIns\Runciter(x64).dll"
+        uid="52633137" isInstrument="0" fileTime="14fbf1b94e0" infoUpdateTime="15f2bc4631d"
+        numInputs="1" numOutputs="1" isShell="0"/>

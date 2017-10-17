@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Uhbik-P(x64)" descriptiveName="Uhbik-P" format="VST" category="Effect"
+        manufacturer="u-he" version="V1.3.1" file="C:\Program Files\VSTPlugIns\Uhbik-P(x64).dll"
+        uid="55635031" isInstrument="0" fileTime="14fbf2656c8" infoUpdateTime="15f2bc46695"
+        numInputs="1" numOutputs="1" isShell="0"/>

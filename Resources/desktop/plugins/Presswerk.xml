@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Presswerk(x64)" descriptiveName="Presswerk" format="VST"
+        category="Effect" manufacturer="u-he" version="V1.1.0" file="C:\Program Files\VSTPlugIns\Presswerk(x64).dll"
+        uid="70727355" isInstrument="0" fileTime="151b5495dd8" infoUpdateTime="15f2bc46285"
+        numInputs="1" numOutputs="1" isShell="0"/>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Uhbik-F(x64)" descriptiveName="Uhbik-F" format="VST" category="Effect"
+        manufacturer="u-he" version="V1.3.1" file="C:\Program Files\VSTPlugIns\Uhbik-F(x64).dll"
+        uid="55634631" isInstrument="0" fileTime="14fbf244f40" infoUpdateTime="15f2bc46598"
+        numInputs="1" numOutputs="1" isShell="0"/>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Satin(x64)" descriptiveName="Satin" format="VST" category=""
+        manufacturer="u-he" version="V1.2.0" file="C:\Program Files\VSTPlugIns\Satin(x64).dll"
+        uid="75685354" isInstrument="0" fileTime="151b54a0da0" infoUpdateTime="15f2bc463a2"
+        numInputs="1" numOutputs="1" isShell="0"/>

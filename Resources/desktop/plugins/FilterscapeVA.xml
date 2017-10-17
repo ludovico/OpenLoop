@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="FilterscapeVA(x64)" descriptiveName="FilterscapeVA" format="VST"
+        category="Synth" manufacturer="u-he" version="V1.4.1" file="C:\Program Files\VSTPlugIns\FilterscapeVA(x64).dll"
+        uid="46535641" isInstrument="1" fileTime="14fbeedbe80" infoUpdateTime="15f2bc4607e"
+        numInputs="1" numOutputs="1" isShell="0"/>

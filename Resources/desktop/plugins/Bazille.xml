@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Bazille(x64)" descriptiveName="Bazille" format="VST" category="Synth"
+        manufacturer="u-he" version="V1.1.0" file="C:\Program Files\VSTPlugIns\Bazille(x64).dll"
+        uid="55704834" isInstrument="1" fileTime="14fbf1445c8" infoUpdateTime="15f2bc45e62"
+        numInputs="1" numOutputs="1" isShell="0"/>

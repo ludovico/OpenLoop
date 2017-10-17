@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Diva(x64)" descriptiveName="Diva" format="VST" category="Synth"
+        manufacturer="u-he" version="V1.4.0" file="C:\Program Files\VSTPlugIns\Diva(x64).dll"
+        uid="44695661" isInstrument="1" fileTime="14fbf158618" infoUpdateTime="15f2bc45ef7"
+        numInputs="1" numOutputs="1" isShell="0"/>

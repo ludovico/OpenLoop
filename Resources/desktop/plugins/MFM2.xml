@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="MFM2(x64)" descriptiveName="MFM2" format="VST" category="Effect"
+        manufacturer="u-he" version="V2.2.1" file="C:\Program Files\VSTPlugIns\MFM2(x64).dll"
+        uid="4d464d32" isInstrument="0" fileTime="14fbf18f8e8" infoUpdateTime="15f2bc4620b"
+        numInputs="1" numOutputs="1" isShell="0"/>

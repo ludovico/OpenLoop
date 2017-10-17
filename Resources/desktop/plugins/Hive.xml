@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Hive(x64)" descriptiveName="Hive" format="VST" category="Synth"
+        manufacturer="u-he" version="V1.1.0" file="C:\Program Files\VSTPlugIns\Hive(x64).dll"
+        uid="68495645" isInstrument="1" fileTime="14fb3a75888" infoUpdateTime="15f2bc46107"
+        numInputs="1" numOutputs="1" isShell="0"/>

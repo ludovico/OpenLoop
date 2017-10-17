@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="Protoverb(x64)" descriptiveName="Protoverb" format="VST"
+        category="Effect" manufacturer="u-he" version="V1.0.0" file="C:\Program Files\VSTPlugIns\Protoverb(x64).dll"
+        uid="75685056" isInstrument="0" fileTime="151c4e5eef0" infoUpdateTime="15f2bc46303"
+        numInputs="1" numOutputs="1" isShell="0"/>

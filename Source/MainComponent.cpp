@@ -27,11 +27,12 @@ void savePluginXml(String path) {
 		File filepath{ path };
 
 		auto newFile = getMachine() == "desktop" ? 
-			File{ "C:/Users/User/Documents/OpenLoop/Resources/plugins/" + filepath.getFileNameWithoutExtension() + ".xml" } :
-			File{ "C:/code/c++/juce/OpenLoop/Resources/laptop/plugins/" + filepath.getFileNameWithoutExtension() + ".xml" };
+			File{ "C:/code/c++/juce/OpenLoop/Resources/desktop/plugins/" + pd->descriptiveName + ".xml" } :
+			File{ "C:/code/c++/juce/OpenLoop/Resources/laptop/plugins/" + pd->descriptiveName + ".xml" };
 
-		auto res = xml->writeToFile(newFile, "");
-		std::cout << res << std::endl;
+		xml->writeToFile(newFile, "");
+		
+		std::cout << "Wrote " << pd->descriptiveName << " to disk" << std::endl;
 	}
 }
 
@@ -70,7 +71,13 @@ void saveDesktopPlugins() {
 	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-Q(x64).dll");
 	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-S(x64).dll");
 	savePluginXml("C:/Program Files/VSTPlugIns/Uhbik-T(x64).dll");
-	
+
+	// NI
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Battery 4.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/FM8.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Massive.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/RC 48.dll");
+	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Guitar Rig 5.dll");
 }
 
 class PluginWindow : public DocumentWindow {
@@ -100,9 +107,183 @@ private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginWindow)
 };
 
+struct MidiInputCallbackImpl : public MidiInputCallback {
+	void handleIncomingMidiMessage(MidiInput* source, const MidiMessage& message) {
+		handleIncomingMidiMessageFunc(source, message);
+	}
+
+	void handlePartialSysexMessage(MidiInput* source, const uint8* messageData, int numBytesSoFar, double timestamp) {
+		handlePartialSysexMessageFunc(source, messageData, numBytesSoFar, timestamp);
+	}
+
+	std::function<void(MidiInput*, const MidiMessage&)> handleIncomingMidiMessageFunc = [](MidiInput*, const MidiMessage&) {};
+	std::function<void(MidiInput*, const uint8*, int, double)> handlePartialSysexMessageFunc = [](MidiInput*, const uint8*, int, double) {};
+};
+
+class AudioProcessorPlayerV2 : public AudioIODeviceCallback {
+public:
+	AudioProcessorPlayerV2() {}
+
+	virtual ~AudioProcessorPlayerV2() {
+		setProcessor(nullptr);
+	}
+
+	void setProcessor(AudioProcessor* processorToPlay) {
+		if (processor != processorToPlay) {
+			if (processorToPlay != nullptr && sampleRate > 0 && blockSize > 0) {
+				processorToPlay->setPlayConfigDetails(numInputChans, numOutputChans, sampleRate, blockSize);
+
+				bool supportsDouble = processorToPlay->supportsDoublePrecisionProcessing() && isDoublePrecision;
+
+				processorToPlay->setProcessingPrecision(supportsDouble ? AudioProcessor::doublePrecision
+					: AudioProcessor::singlePrecision);
+				processorToPlay->prepareToPlay(sampleRate, blockSize);
+			}
+
+			AudioProcessor* oldOne;
+
+			{
+				const ScopedLock sl(lock);
+				oldOne = isPrepared ? processor : nullptr;
+				processor = processorToPlay;
+				isPrepared = true;
+			}
+
+			if (oldOne != nullptr)
+				oldOne->releaseResources();
+		}
+	}
+
+	void setDoublePrecisionProcessing(bool doublePrecision) {
+		if (doublePrecision != isDoublePrecision) {
+			const ScopedLock sl(lock);
+
+			if (processor != nullptr) {
+				processor->releaseResources();
+
+				bool supportsDouble = processor->supportsDoublePrecisionProcessing() && doublePrecision;
+
+				processor->setProcessingPrecision(supportsDouble ? AudioProcessor::doublePrecision
+					: AudioProcessor::singlePrecision);
+				processor->prepareToPlay(sampleRate, blockSize);
+			}
+
+			isDoublePrecision = doublePrecision;
+		}
+	}
+
+	void audioDeviceIOCallback(const float** inputChannelData, int numInputChannels, float** outputChannelData, int numOutputChannels, int numSamples) override {
+		jassert(sampleRate > 0 && blockSize > 0);
+
+		int totalNumChans = 0;
+
+		if (numInputChannels > numOutputChannels) {
+			tempBuffer.setSize(numInputChannels - numOutputChannels, numSamples,
+				false, false, true);
+
+			for (int i = 0; i < numOutputChannels; ++i) {
+				channels[totalNumChans] = outputChannelData[i];
+				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
+				++totalNumChans;
+			}
+
+			for (int i = numOutputChannels; i < numInputChannels; ++i) {
+				channels[totalNumChans] = tempBuffer.getWritePointer(i - numOutputChannels);
+				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
+				++totalNumChans;
+			}
+		} else {
+			for (int i = 0; i < numInputChannels; ++i) {
+				channels[totalNumChans] = outputChannelData[i];
+				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
+				++totalNumChans;
+			}
+
+			for (int i = numInputChannels; i < numOutputChannels; ++i) {
+				channels[totalNumChans] = outputChannelData[i];
+				zeromem(channels[totalNumChans], sizeof(float) * (size_t)numSamples);
+				++totalNumChans;
+			}
+		}
+
+		AudioSampleBuffer buffer(channels, totalNumChans, numSamples);
+
+		{
+			const ScopedLock sl(lock);
+
+			if (processor != nullptr) {
+				const ScopedLock sl2(processor->getCallbackLock());
+
+				if (!processor->isSuspended()) {
+					if (processor->isUsingDoublePrecision()) {
+						conversionBuffer.makeCopyOf(buffer, true);
+						processor->processBlock(conversionBuffer, incomingMidi);
+						buffer.makeCopyOf(conversionBuffer, true);
+					} else {
+						processor->processBlock(buffer, incomingMidi);
+					}
+
+					return;
+				}
+			}
+		}
+
+		incomingMidi.clear();
+
+		for (int i = 0; i < numOutputChannels; ++i)
+			FloatVectorOperations::clear(outputChannelData[i], numSamples);
+	}
+
+	void audioDeviceAboutToStart(AudioIODevice* device) override {
+		auto newSampleRate = device->getCurrentSampleRate();
+		auto newBlockSize = device->getCurrentBufferSizeSamples();
+		auto numChansIn = device->getActiveInputChannels().countNumberOfSetBits();
+		auto numChansOut = device->getActiveOutputChannels().countNumberOfSetBits();
+
+		const ScopedLock sl(lock);
+
+		sampleRate = newSampleRate;
+		blockSize = newBlockSize;
+		numInputChans = numChansIn;
+		numOutputChans = numChansOut;
+
+		channels.calloc((size_t)jmax(numChansIn, numChansOut) + 2);
+
+		if (processor != nullptr) {
+			if (isPrepared)
+				processor->releaseResources();
+
+			auto* oldProcessor = processor;
+			setProcessor(nullptr);
+			setProcessor(oldProcessor);
+		}
+	}
+	void audioDeviceStopped() override {
+		const ScopedLock sl(lock);
+
+		if (processor != nullptr && isPrepared)
+			processor->releaseResources();
+
+		sampleRate = 0.0;
+		blockSize = 0;
+		isPrepared = false;
+		tempBuffer.setSize(1, 1);
+	}
+
+	AudioProcessor* processor = nullptr;
+	CriticalSection lock;
+	double sampleRate = 0;
+	int blockSize = 0;
+	bool isPrepared = false, isDoublePrecision = true;
+	int numInputChans = 0, numOutputChans = 0;
+	HeapBlock<float*> channels;
+	AudioBuffer<float> tempBuffer;
+	AudioBuffer<double> conversionBuffer;
+	MidiBuffer incomingMidi;
+};
+
 class TCPServer : public Thread {
 public:
-	//TCPServer(sol::state& lua) : Thread("tcp-server"), lua{ lua } {}
 	TCPServer(chaiscript::ChaiScript& chai) : Thread("tcp-server"), chai{ chai } {}
 
 	void run() override {
@@ -119,10 +300,6 @@ public:
 			auto s = String{ utf8 }.toStdString();
 			
 			MessageManager::callAsync([&, s]() {
-				//lua.script(s.toStdString(), [](lua_State* L, sol::protected_function_result pfr) {
-				//	std::cout << "syntax error" << std::endl;
-				//	return pfr;
-				//);
 				try {
 					chai.eval(s);
 				} catch (std::exception e) {
@@ -148,258 +325,7 @@ public:
 		setTopLeftPosition(0, 700);
 		setAudioChannels(2, 2);
 
-		saveLaptopPlugins();
-
-		//lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::math, sol::lib::os);
-
-		/*lua.set("deviceManager", &deviceManager);
-		lua.set("pluginWindow", &pluginWindow);
-		
-		lua.new_usertype<AudioDeviceManager>(
-			"AudioDeviceManager", sol::constructors<>(),
-			"getCurrentAudioDeviceType", &AudioDeviceManager::getCurrentAudioDeviceType,
-			"getCpuUsage", &AudioDeviceManager::getCpuUsage,
-			"createStateXml", &AudioDeviceManager::createStateXml,
-			"playTestSound", &AudioDeviceManager::playTestSound,
-			"addAudioCallback", &AudioDeviceManager::addAudioCallback,
-			"removeAudioCallback", &AudioDeviceManager::removeAudioCallback,
-			"addMidiInputCallback", &AudioDeviceManager::addMidiInputCallback,
-			"removeMidiInputCallback", &AudioDeviceManager::removeMidiInputCallback,
-			"setMidiInputEnabled", &AudioDeviceManager::setMidiInputEnabled
-			);
-
-		lua.new_usertype<AudioFormatReaderSource>(
-			"AudioFormatReaderSource", sol::constructors<AudioFormatReaderSource(AudioFormatReader*, bool)>(),
-			"setLooping", &AudioFormatReaderSource::setLooping,
-			"isLooping", &AudioFormatReaderSource::isLooping,
-			"getAudioFormatReader", &AudioFormatReaderSource::getAudioFormatReader,
-			"getNextReadPosition", &AudioFormatReaderSource::getNextReadPosition,
-			"getTotalLength", &AudioFormatReaderSource::getTotalLength
-			);
-
-		lua.new_usertype<AudioPluginFormatManager>(
-			"AudioPluginFormatManager", sol::constructors<AudioPluginFormatManager()>(),
-			"addDefaultFormats", &AudioPluginFormatManager::addDefaultFormats,
-			"getNumFormats", &AudioPluginFormatManager::getNumFormats,
-			"getFormat", &AudioPluginFormatManager::getFormat,
-			"createPluginInstance", &AudioPluginFormatManager::createPluginInstance,
-			"doesPluginStillExist", &AudioPluginFormatManager::doesPluginStillExist
-			);
-			
-		lua.new_usertype<AudioPluginInstance>(
-			"AudioPluginInstance", sol::constructors<>(),
-			"fillInPluginDescription", &AudioPluginInstance::fillInPluginDescription,
-			"getPluginDescription", &AudioPluginInstance::getPluginDescription,
-			"getName", &AudioPluginInstance::getName,
-			"getBusCount", &AudioPluginInstance::getBusCount,
-			"isUsingDoublePrecision", &AudioPluginInstance::isUsingDoublePrecision,
-			"getTotalNumInputChannels", &AudioPluginInstance::getTotalNumInputChannels,
-			"getTotalNumOutputChannels", &AudioPluginInstance::getTotalNumOutputChannels,
-			"getMainBusNumInputChannels", &AudioPluginInstance::getMainBusNumInputChannels,
-			"getMainBusNumOutputChannels", &AudioPluginInstance::getMainBusNumOutputChannels,
-			"acceptsMidi", &AudioPluginInstance::acceptsMidi,
-			"producesMidi", &AudioPluginInstance::producesMidi,
-			"reset", &AudioPluginInstance::reset,
-			"createEditor", &AudioPluginInstance::createEditor,
-			"createEditorIfNeeded", &AudioPluginInstance::createEditorIfNeeded,
-			"getStateInformation", &AudioPluginInstance::getStateInformation
-			//"setStateInformation", &AudioPluginInstance::setStateInformation
-			);
-		
-		lua.new_usertype<AudioProcessorPlayer>(
-			"AudioProcessorPlayer", sol::constructors<AudioProcessorPlayer(bool)>(),
-			"setProcessor", &AudioProcessorPlayer::setProcessor,
-			"getCurrentProcessor", &AudioProcessorPlayer::getCurrentProcessor,
-			"getMidiMessageCollector", &AudioProcessorPlayer::getMidiMessageCollector,
-			"setDoublePrecisionProcessing", &AudioProcessorPlayer::setDoublePrecisionProcessing
-			);
-
-		lua.new_usertype<Colour>(
-			"Colour", sol::constructors<Colour(), Colour(float, float, float, float)>()
-			);
-
-		
-
-		lua.new_usertype<File>(
-			"File", sol::constructors<File(), File(const String&)>(),
-			"exists", &File::exists,
-			"existsAsFile", &File::existsAsFile,
-			"isDirectory", &File::isDirectory,
-			"isRoot", &File::isRoot,
-			"getSize", &File::getSize,
-			"getFullPathName", &File::getFullPathName,
-			"getFileName", &File::getFileName,
-			"getRelativePathFrom", &File::getRelativePathFrom,
-			"getFileExtension", &File::getFileExtension,
-			"hasFileExtension", &File::hasFileExtension,
-			"withFileExtension", &File::withFileExtension,
-			"getFileNameWithoutExtension", &File::getFileNameWithoutExtension,
-			"hashCode", &File::hashCode,
-			"hashCode64", &File::hashCode64,
-			"getChildFile", &File::getChildFile,
-			"getSiblingFile", &File::getSiblingFile,
-			"getParentDirectory", &File::getParentDirectory,
-			"isAChildOf", &File::isAChildOf,
-			"getNonexistentChildFile", &File::getNonexistentChildFile,
-			"getNonexistentSibling", &File::getNonexistentSibling,
-			"hasWriteAccess", &File::hasWriteAccess,
-			"setReadOnly", &File::setReadOnly,
-			"setExecutePermission", &File::setExecutePermission,
-			"isHidden", &File::isHidden,
-			"getFileIdentifier", &File::getFileIdentifier,
-			"getLastModificationTime", &File::getLastModificationTime,
-			"getLastAccessTime", &File::getLastAccessTime,
-			"getCreationTime", &File::getCreationTime,
-			"getVersion", &File::getVersion,
-			"create", &File::create,
-			"createDirectory", &File::createDirectory,
-			"deleteFile", &File::deleteFile,
-			"deleteRecursively", &File::deleteRecursively,
-			"moveToTrash", &File::moveToTrash,
-			"moveFileTo", &File::moveFileTo,
-			"copyFileTo", &File::copyFileTo,
-			"replaceFileIn", &File::replaceFileIn,
-			"copyDirectoryTo", &File::copyDirectoryTo,
-			"findChildFiles", &File::findChildFiles,
-			"getNumberOfChildFiles", &File::getNumberOfChildFiles,
-			"createInputStream", &File::createInputStream,
-			"createOutputStream", &File::createOutputStream
-			);
-
-		lua.new_usertype<FileInputStream>(
-			"FileInputStream", sol::constructors<FileInputStream(const File&)>(),
-			"getFile", &FileInputStream::getFile,
-			"getStatus", &FileInputStream::getStatus,
-			"failedToOpen", &FileInputStream::failedToOpen,
-			"openedOk", &FileInputStream::openedOk,
-			"getTotalLength", &FileInputStream::getTotalLength,
-			"read", &FileInputStream::read,
-			"isExhausted", &FileInputStream::isExhausted,
-			"getPosition", &FileInputStream::getPosition,
-			"setPosition", &FileInputStream::setPosition
-			);
-
-		lua.new_usertype<KnownPluginList>(
-			"KnownPluginList", sol::constructors<KnownPluginList()>(),
-			"clear", &KnownPluginList::clear,
-			"getNumTypes", &KnownPluginList::getNumTypes,
-			"getType", &KnownPluginList::getType,
-			"getTypeForFile", &KnownPluginList::getTypeForFile,
-			"getTypeForIdentifierString", &KnownPluginList::getTypeForIdentifierString,
-			"addType", &KnownPluginList::addType,
-			"removeType", &KnownPluginList::removeType,
-			"scanAndAddFile", &KnownPluginList::scanAndAddFile,
-			"createXml", &KnownPluginList::createXml,
-			"recreateFromXml", &KnownPluginList::recreateFromXml
-			);
-
-		lua.set_function("MidiInputGetDevices", MidiInput::getDevices);
-		lua.set_function("MidiInputOpenDevice", MidiInput::openDevice);
-
-		lua.new_usertype<MidiInput>(
-			"MidiInput", sol::constructors<>(),
-			"getName", &MidiInput::getName,
-			"start", &MidiInput::start,
-			"stop", &MidiInput::stop
-			);
-
-		lua.new_usertype<MidiKeyboardState>(
-			"MidiKeyboardState", sol::constructors<MidiKeyboardState()>(),
-			"reset", &MidiKeyboardState::reset,
-			"allNotesOff", &MidiKeyboardState::allNotesOff,
-			"addListener", &MidiKeyboardState::addListener,
-			"removeListener", &MidiKeyboardState::removeListener
-			);
-
-		lua.set_function("noteOn", [](int ch, int noteNum, uint8 vel) { return MidiMessage::noteOn(ch, noteNum, vel); });
-		lua.set_function("noteOff", [](int ch, int noteNum, uint8 vel) { return MidiMessage::noteOff(ch, noteNum, vel); });
-		
-		lua.new_usertype<MidiMessage>(
-			"MidiMessage", sol::constructors<MidiMessage(), MidiMessage(int, int, int, double)>(),
-			"getTimeStamp", &MidiMessage::getTimeStamp,
-			"setTimeStamp", &MidiMessage::setTimeStamp,
-			"addToTimeStamp", &MidiMessage::addToTimeStamp,
-			"getNoteNumber", &MidiMessage::getNoteNumber,
-			"getVelocity", &MidiMessage::getVelocity,
-			"isNoteOn", &MidiMessage::isNoteOn,
-			"isNoteOff", &MidiMessage::isNoteOff
-			);
-
-		lua.new_usertype<MidiMessageCollector>(
-			"MidiMessageCollector", sol::constructors<MidiMessageCollector()>(),
-			"reset", &MidiMessageCollector::reset,
-			"addMessageToQueue", &MidiMessageCollector::addMessageToQueue
-			);
-
-		lua.new_usertype<OwnedArray<PluginDescription>>(
-			"OwnedArray", sol::constructors<OwnedArray<PluginDescription>()>(),
-			"size", &OwnedArray<PluginDescription>::size,
-			"get", &OwnedArray<PluginDescription>::operator[]
-			);
-
-		lua.new_usertype<PluginDescription>(
-			"PluginDescription", sol::constructors<PluginDescription()>(),
-			"isDuplicateOf", &PluginDescription::isDuplicateOf,
-			"matchesIdentifierString", &PluginDescription::matchesIdentifierString,
-			"createIdentifierString", &PluginDescription::createIdentifierString,
-			"createXml", &PluginDescription::createXml,
-			"loadFromXml", &PluginDescription::loadFromXml,
-			"name", &PluginDescription::name,
-			"descriptiveName", &PluginDescription::descriptiveName,
-			"pluginFormatName", &PluginDescription::pluginFormatName,
-			"category", &PluginDescription::category,
-			"manufacturerName", &PluginDescription::manufacturerName,
-			"version", &PluginDescription::version,
-			"fileOrIdentifier", &PluginDescription::fileOrIdentifier,
-			"lastFileModTime", &PluginDescription::lastFileModTime,
-			"lastInfoUpdateTime", &PluginDescription::lastInfoUpdateTime,
-			"uid", &PluginDescription::uid,
-			"isInstrument", &PluginDescription::isInstrument,
-			"numInputChannels", &PluginDescription::numInputChannels,
-			"numOutputChannels", &PluginDescription::numOutputChannels,
-			"hasSharedContainer", &PluginDescription::hasSharedContainer
-			);
-
-		lua.new_usertype<PluginWindow>(
-			"PluginWindow", sol::constructors<>(),
-			"clear", &PluginWindow::clear,
-			"setEditor", &PluginWindow::setEditor
-			);
-
-		lua.new_usertype<SoundPlayer>(
-			"SoundPlayer", sol::constructors<SoundPlayer()>(),
-			"play", [](SoundPlayer& soundPlayer, const File& file) { soundPlayer.play(file); },
-			"playTestSound", &SoundPlayer::playTestSound
-			);
-
-		lua.new_usertype<String>(
-			"String", sol::constructors<String(), String(const std::string&)>(),
-			"length", &String::length,
-			"hashCode", &String::hashCode,
-			"hashCode64", &String::hashCode64,
-			"toUTF8", &String::toUTF8
-			);
-
-		lua.new_usertype<WavAudioFormat>(
-			"WavAudioFormat", sol::constructors<WavAudioFormat()>(),
-			"createReaderFor", &WavAudioFormat::createReaderFor
-			);
-
-		lua.new_usertype<XmlDocument>(
-			"XmlDocument", sol::constructors<XmlDocument(String), XmlDocument(File)>(),
-			"getDocumentElement", &XmlDocument::getDocumentElement,
-			"getLastParseError", &XmlDocument::getLastParseError
-			);
-
-		lua.set_function("parseXmlDocument", [](const File& file) { return XmlDocument::parse(file); });
-
-		lua.new_usertype<XmlElement>(
-			"XmlElement", sol::constructors<>(),
-			"getTagName", &XmlElement::getTagName,
-			"getNumAttributes", &XmlElement::getNumAttributes,
-			"getAttributeName", &XmlElement::getAttributeName,
-			"getAttributeValue", &XmlElement::getAttributeValue
-			);*/
+		//saveDesktopPlugins();
 
 		chai.add(chaiscript::var(std::ref(deviceManager)), "deviceManager");
 		chai.add(chaiscript::var(std::ref(pluginWindow)), "pluginWindow");
@@ -438,11 +364,33 @@ public:
 		chai.add(chaiscript::fun(&AudioProcessor::createEditorIfNeeded), "createEditorIfNeeded");
 		chai.add(chaiscript::fun(&AudioProcessor::getStateInformation), "getStateInformation");
 
+		chai.add(chaiscript::user_type<AudioProcessorPlayerV2>(), "AudioProcessorPlayerV2");
+		chai.add(chaiscript::base_class<AudioIODeviceCallback, AudioProcessorPlayerV2>());
+		chai.add(chaiscript::constructor<AudioProcessorPlayerV2()>(), "AudioProcessorPlayerV2");
+		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::setProcessor), "setProcessor");
+		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::incomingMidi), "incomingMidi");
+		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::lock), "lock");
+
 		chai.add(chaiscript::user_type<File>(), "File");
 		chai.add(chaiscript::constructor<File()>(), "File");
 		chai.add(chaiscript::constructor<File(const String&)>(), "File");
 		chai.add(chaiscript::fun(static_cast<File(*)(std::string)>([](std::string s) { return File{ s }; })), "File");
 		chai.add(chaiscript::fun(&File::exists), "exists");
+
+		chai.add(chaiscript::user_type<MidiBuffer>(), "MidiBuffer");
+		chai.add(chaiscript::constructor<MidiBuffer()>(), "MidiBuffer");
+		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)()>(&MidiBuffer::clear)), "clear");
+		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(int, int)>(&MidiBuffer::clear)), "clear");
+		chai.add(chaiscript::fun(&MidiBuffer::isEmpty), "isEmpty");
+		chai.add(chaiscript::fun(&MidiBuffer::getNumEvents), "getNumEvents");
+		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(const MidiMessage&, int)>(&MidiBuffer::addEvent)), "addEvent");
+		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(const void*, int, int)>(&MidiBuffer::addEvent)), "addEvent");
+		chai.add(chaiscript::fun(&MidiBuffer::addEvents), "addEvents");
+		chai.add(chaiscript::fun(&MidiBuffer::getFirstEventTime), "getFirstEventTime");
+		chai.add(chaiscript::fun(&MidiBuffer::getLastEventTime), "getLastEventTime");
+		chai.add(chaiscript::fun(&MidiBuffer::swapWith), "swapWith");
+		chai.add(chaiscript::fun(static_cast<bool(*)(MidiBuffer&, MidiBuffer&)>([](MidiBuffer& buf1, MidiBuffer& buf2) { return &buf1 == &buf2; })), "MidiBufferEqual");
+		chai.add(chaiscript::fun(static_cast<int(*)(MidiBuffer&)>([](MidiBuffer& buf) { return reinterpret_cast<int>(&buf); })), "address");
 
 		chai.add(chaiscript::user_type<MidiInput>(), "MidiInput");
 		chai.add(chaiscript::fun(MidiInput::getDevices), "MidiInputGetDevices");
@@ -451,12 +399,15 @@ public:
 		chai.add(chaiscript::fun(&MidiInput::start), "start");
 		chai.add(chaiscript::fun(&MidiInput::stop), "stop");
 
-		chai.add(chaiscript::user_type<MidiMessage>(), "MidiMessage");
-		//chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>([](int ch, int nn, uint8 vel) { return MidiMessage::noteOn(ch, nn, vel); })), "MidiMessageNoteOn");
-		//chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>([](int ch, int nn, uint8 vel) { return MidiMessage::noteOff(ch, nn, vel); })), "MidiMessageNoteOff");
-		chai.add(chaiscript::fun(MidiMessage::noteOn), "noteOn");
-		chai.add(chaiscript::fun(MidiMessage::noteOff), "noteOff");
+		chai.add(chaiscript::base_class<MidiInputCallback, MidiInputCallbackImpl>());
+		chai.add(chaiscript::user_type<MidiInputCallbackImpl>(), "MidiInputCallbackImpl");
+		chai.add(chaiscript::constructor<MidiInputCallbackImpl()>(), "MidiInputCallbackImpl");
+		chai.add(chaiscript::fun(&MidiInputCallbackImpl::handleIncomingMidiMessageFunc), "handleIncomingMidiMessageFunc");
+		chai.add(chaiscript::fun(&MidiInputCallbackImpl::handlePartialSysexMessageFunc), "handlePartialSysexMessageFunc");
 
+		chai.add(chaiscript::user_type<MidiMessage>(), "MidiMessage");
+		chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>(MidiMessage::noteOn)), "MidiMessageNoteOn");
+		chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>(MidiMessage::noteOff)), "MidiMessageNoteOff");
 		chai.add(chaiscript::constructor<MidiMessage()>(), "MidiMessage");
 		chai.add(chaiscript::constructor<MidiMessage(int, int, int, double)>(), "MidiMessage");
 		chai.add(chaiscript::fun(&MidiMessage::getTimeStamp), "getTimeStamp");
@@ -476,6 +427,9 @@ public:
 		chai.add(chaiscript::fun(&PluginWindow::clear), "clear");
 		chai.add(chaiscript::fun(&PluginWindow::setEditor), "setEditor");
 
+		chai.add(chaiscript::user_type<GenericScopedLock<CriticalSection>>(), "ScopedLock");
+		chai.add(chaiscript::constructor<GenericScopedLock<CriticalSection>(const CriticalSection&)>(), "ScopedLock");
+
 		chai.add(chaiscript::user_type<String>(), "String");
 		chai.add(chaiscript::constructor<String(const std::string&)>(), "String");
 		chai.add(chaiscript::fun(static_cast<std::string(*)(String)>([](String s) { return s.toStdString(); })), "to_string");
@@ -486,48 +440,6 @@ public:
 		chai.add(chaiscript::fun(&XmlDocument::getDocumentElement), "getDocumentElement");
 		
 		chai.add(chaiscript::user_type<XmlElement>(), "XmlElement");
-
-		/*lua.set_function("createEditorWindow", [](String name) { MessageManager::callAsync([&]() { new DocumentWindow(name, Colour{}, 6, true); }); });*/
-
-		/*lua.new_usertype<DocumentWindow>(
-		"DocumentWindow", sol::constructors<DocumentWindow(String, Colour, int, bool)>(),
-		//"DocumentWindow", sol::constructors<>(),
-		"setName", &DocumentWindow::setName,
-		"setTitleBarHeight", &DocumentWindow::setTitleBarHeight,
-		"setTitleBarTextCentred", &DocumentWindow::setTitleBarTextCentred,
-		"isResizable", &DocumentWindow::isResizable,
-		"setResizable", &DocumentWindow::setResizable,
-		"setContentOwned", &DocumentWindow::setContentOwned,
-		"isVisible", &DocumentWindow::isVisible,
-		"setVisible", &DocumentWindow::setVisible,
-		"setSize", &DocumentWindow::setSize
-		);*/
-
-		/*lua.new_usertype<AudioPluginFormat>(
-		//"AudioPluginFormat", sol::constructors<AudioPluginFormat()>(),
-		"findAllTypesForFile", &AudioPluginFormat::findAllTypesForFile
-		);*/
-
-		/*lua.new_usertype<VSTPluginFormat>(
-		"VSTPluginFormat", sol::constructors<VSTPluginFormat()>(),
-		"findAllTypesForFile", &VSTPluginFormat::findAllTypesForFile
-		);
-
-		lua.new_usertype<VST3PluginFormat>(
-		"VSTPluginFormat", sol::constructors<VST3PluginFormat()>(),
-		"findAllTypesForFile", &VST3PluginFormat::findAllTypesForFile
-		);*/
-
-		/*auto pluginxml = XmlDocument::parse(File{ "C:/Users/User/Documents/OpenLoop/Resources/plugins/ACE(x64).xml" });
-		pd.loadFromXml(*pluginxml);
-		auto apfm = new AudioPluginFormatManager;
-		apfm->addDefaultFormats();
-		String errorstring;
-		instance = apfm->createPluginInstance(pd, 44100, 480, errorstring);
-		applayer.setProcessor(instance);
-		deviceManager.addAudioCallback(&applayer);
-		editor = instance->createEditorIfNeeded();*/
-		
 		
 		pluginWindow.toFront(true);
 		tcpServer.startThread();
@@ -557,19 +469,9 @@ public:
 
 	}
 	
-	//sol::state lua;
-	//TCPServer tcpServer{ lua };
 	chaiscript::ChaiScript chai;
 	TCPServer tcpServer{ chai };
 	PluginWindow pluginWindow;
-
-	/*AudioPluginInstance* instance;
-	AudioProcessorEditor* editor;
-	AudioProcessorPlayer applayer{ true };
-	PluginDescription pd;
-	DocumentWindow docwindow{ "ace", Colour::fromHSV(0.3, 0.2, 0.6, 0.4), 4, true };
-	PluginWindow* pluginwindow;*/
-
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainContentComponent)
 };

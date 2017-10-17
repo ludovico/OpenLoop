@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PLUGIN name="FilterscapeQ6(x64)" descriptiveName="FilterscapeQ6" format="VST"
+        category="Effect" manufacturer="u-he" version="V1.4.1" file="C:\Program Files\VSTPlugIns\FilterscapeQ6(x64).dll"
+        uid="46535136" isInstrument="0" fileTime="14fbeec2840" infoUpdateTime="15f2bc45ffd"
+        numInputs="1" numOutputs="1" isShell="0"/>
