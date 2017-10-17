@@ -2,5 +2,5 @@
 
 <PLUGIN name="Battery 4" format="VST" category="Synth" manufacturer="Native Instruments GmbH"
         version="V4.1.5" file="C:\Program Files\Native Instruments\VSTPlugins 64 bit\Battery 4.dll"
-        uid="4e426134" isInstrument="1" fileTime="14cebd6aa03" infoUpdateTime="15f25337d71"
+        uid="4e426134" isInstrument="1" fileTime="14cebd6aa03" infoUpdateTime="15f2ae512f7"
         numInputs="0" numOutputs="32" isShell="0"/>

@@ -2,5 +2,5 @@
 
 <PLUGIN name="Guitar Rig 5" format="VST" category="Effect" manufacturer="Native Instruments GmbH"
         version="V5.2.1" file="C:\Program Files\Native Instruments\VSTPlugins 64 bit\Guitar Rig 5.dll"
-        uid="4e694735" isInstrument="0" fileTime="152307d08a5" infoUpdateTime="15f25338cbd"
+        uid="4e694735" isInstrument="0" fileTime="152307d08a5" infoUpdateTime="15f2ae52248"
         numInputs="4" numOutputs="2" isShell="0"/>

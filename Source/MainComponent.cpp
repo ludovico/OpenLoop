@@ -4,7 +4,9 @@
 #include <unordered_map>
 #include <string>
 #include <functional>
-#include "../Source/sol.hpp"
+//#include "../Source/sol.hpp"
+#include "chaiscript\chaiscript.hpp"
+#include "chaiscript\chaiscript_stdlib.hpp"
 
 #pragma warning (disable : 4100)
 
@@ -100,7 +102,8 @@ private:
 
 class TCPServer : public Thread {
 public:
-	TCPServer(sol::state& lua) : Thread("tcp-server"), lua{ lua } {}
+	//TCPServer(sol::state& lua) : Thread("tcp-server"), lua{ lua } {}
+	TCPServer(chaiscript::ChaiScript& chai) : Thread("tcp-server"), chai{ chai } {}
 
 	void run() override {
 		serverSocket.createListener(8989, "127.0.0.1");
@@ -113,19 +116,24 @@ public:
 			buf[i] = 0;
 
 			auto utf8 = CharPointer_UTF8{ buf };
-			auto s = String{ utf8 };
+			auto s = String{ utf8 }.toStdString();
 			
-			MessageManager::callAsync([=]() {
-				auto str = s;
-				lua.script(s.toStdString(), [](lua_State* L, sol::protected_function_result pfr) {
-					std::cout << "syntax error" << std::endl;
-					return pfr;
-				});
+			MessageManager::callAsync([&, s]() {
+				//lua.script(s.toStdString(), [](lua_State* L, sol::protected_function_result pfr) {
+				//	std::cout << "syntax error" << std::endl;
+				//	return pfr;
+				//);
+				try {
+					chai.eval(s);
+				} catch (std::exception e) {
+					std::cout << e.what() << std::endl;
+				}
 			});
 		}
 	}
 
-	sol::state& lua;
+	//sol::state& lua;
+	chaiscript::ChaiScript& chai;
 	StreamingSocket serverSocket;
 };
 
@@ -140,9 +148,11 @@ public:
 		setTopLeftPosition(0, 700);
 		setAudioChannels(2, 2);
 
-		lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::math, sol::lib::os);
+		saveLaptopPlugins();
 
-		lua.set("deviceManager", &deviceManager);
+		//lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::math, sol::lib::os);
+
+		/*lua.set("deviceManager", &deviceManager);
 		lua.set("pluginWindow", &pluginWindow);
 		
 		lua.new_usertype<AudioDeviceManager>(
@@ -208,21 +218,7 @@ public:
 			"Colour", sol::constructors<Colour(), Colour(float, float, float, float)>()
 			);
 
-		/*lua.set_function("createEditorWindow", [](String name) { MessageManager::callAsync([&]() { new DocumentWindow(name, Colour{}, 6, true); }); });*/
-
-		/*lua.new_usertype<DocumentWindow>(
-			"DocumentWindow", sol::constructors<DocumentWindow(String, Colour, int, bool)>(),
-			//"DocumentWindow", sol::constructors<>(),
-			"setName", &DocumentWindow::setName,
-			"setTitleBarHeight", &DocumentWindow::setTitleBarHeight,
-			"setTitleBarTextCentred", &DocumentWindow::setTitleBarTextCentred,
-			"isResizable", &DocumentWindow::isResizable,
-			"setResizable", &DocumentWindow::setResizable,
-			"setContentOwned", &DocumentWindow::setContentOwned,
-			"isVisible", &DocumentWindow::isVisible,
-			"setVisible", &DocumentWindow::setVisible,
-			"setSize", &DocumentWindow::setSize
-			);*/
+		
 
 		lua.new_usertype<File>(
 			"File", sol::constructors<File(), File(const String&)>(),
@@ -403,8 +399,109 @@ public:
 			"getNumAttributes", &XmlElement::getNumAttributes,
 			"getAttributeName", &XmlElement::getAttributeName,
 			"getAttributeValue", &XmlElement::getAttributeValue
-			);
-			
+			);*/
+
+		chai.add(chaiscript::var(std::ref(deviceManager)), "deviceManager");
+		chai.add(chaiscript::var(std::ref(pluginWindow)), "pluginWindow");
+
+		chai.add(chaiscript::user_type<AudioDeviceManager>(), "AudioDeviceManager");
+		chai.add(chaiscript::fun(&AudioDeviceManager::getCurrentAudioDeviceType), "getCurrentAudioDeviceType");
+		chai.add(chaiscript::fun(&AudioDeviceManager::getCpuUsage), "getCpuUsage");
+		chai.add(chaiscript::fun(&AudioDeviceManager::createStateXml), "createStateXml");
+		chai.add(chaiscript::fun(&AudioDeviceManager::playTestSound), "playTestSound");
+		chai.add(chaiscript::fun(&AudioDeviceManager::addAudioCallback), "addAudioCallback");
+		chai.add(chaiscript::fun(&AudioDeviceManager::removeAudioCallback), "removeAudioCallback");
+		chai.add(chaiscript::fun(&AudioDeviceManager::addMidiInputCallback), "addMidiInputCallback");
+		chai.add(chaiscript::fun(&AudioDeviceManager::removeMidiInputCallback), "removeMidiInputCallback");
+		chai.add(chaiscript::fun(&AudioDeviceManager::setMidiInputEnabled), "setMidiInputEnabled");
+
+		chai.add(chaiscript::user_type<AudioPluginFormatManager>(), "AudioPluginFormatManager");
+		chai.add(chaiscript::constructor<AudioPluginFormatManager()>(), "AudioPluginFormatManager");
+		chai.add(chaiscript::fun(&AudioPluginFormatManager::addDefaultFormats), "addDefaultFormats");
+		chai.add(chaiscript::fun(&AudioPluginFormatManager::createPluginInstance), "createPluginInstance");
+
+		chai.add(chaiscript::user_type<AudioPluginInstance>(), "AudioPluginInstance");
+		chai.add(chaiscript::base_class<AudioProcessor, AudioPluginInstance>());
+		
+		chai.add(chaiscript::user_type<AudioProcessor>(), "AudioProcessor");
+		chai.add(chaiscript::fun(&AudioProcessor::getName), "getName");
+		chai.add(chaiscript::fun(&AudioProcessor::getBusCount), "getBusCount");
+		chai.add(chaiscript::fun(&AudioProcessor::isUsingDoublePrecision), "isUsingDoublePrecision");
+		chai.add(chaiscript::fun(&AudioProcessor::getTotalNumInputChannels), "getTotalNumInputChannels");
+		chai.add(chaiscript::fun(&AudioProcessor::getTotalNumOutputChannels), "getTotalNumOutputChannels");
+		chai.add(chaiscript::fun(&AudioProcessor::getMainBusNumInputChannels), "getMainBusNumInputChannels");
+		chai.add(chaiscript::fun(&AudioProcessor::getMainBusNumOutputChannels), "getMainBusNumOutputChannels");
+		chai.add(chaiscript::fun(&AudioProcessor::acceptsMidi), "acceptsMidi");
+		chai.add(chaiscript::fun(&AudioProcessor::producesMidi), "producesMidi");
+		chai.add(chaiscript::fun(&AudioProcessor::reset), "reset");
+		chai.add(chaiscript::fun(&AudioProcessor::createEditor), "createEditor");
+		chai.add(chaiscript::fun(&AudioProcessor::createEditorIfNeeded), "createEditorIfNeeded");
+		chai.add(chaiscript::fun(&AudioProcessor::getStateInformation), "getStateInformation");
+
+		chai.add(chaiscript::user_type<File>(), "File");
+		chai.add(chaiscript::constructor<File()>(), "File");
+		chai.add(chaiscript::constructor<File(const String&)>(), "File");
+		chai.add(chaiscript::fun(static_cast<File(*)(std::string)>([](std::string s) { return File{ s }; })), "File");
+		chai.add(chaiscript::fun(&File::exists), "exists");
+
+		chai.add(chaiscript::user_type<MidiInput>(), "MidiInput");
+		chai.add(chaiscript::fun(MidiInput::getDevices), "MidiInputGetDevices");
+		chai.add(chaiscript::fun(MidiInput::openDevice), "MidiInputOpenDevice");
+		chai.add(chaiscript::fun(&MidiInput::getName), "getName");
+		chai.add(chaiscript::fun(&MidiInput::start), "start");
+		chai.add(chaiscript::fun(&MidiInput::stop), "stop");
+
+		chai.add(chaiscript::user_type<MidiMessage>(), "MidiMessage");
+		//chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>([](int ch, int nn, uint8 vel) { return MidiMessage::noteOn(ch, nn, vel); })), "MidiMessageNoteOn");
+		//chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>([](int ch, int nn, uint8 vel) { return MidiMessage::noteOff(ch, nn, vel); })), "MidiMessageNoteOff");
+		chai.add(chaiscript::fun(MidiMessage::noteOn), "noteOn");
+		chai.add(chaiscript::fun(MidiMessage::noteOff), "noteOff");
+
+		chai.add(chaiscript::constructor<MidiMessage()>(), "MidiMessage");
+		chai.add(chaiscript::constructor<MidiMessage(int, int, int, double)>(), "MidiMessage");
+		chai.add(chaiscript::fun(&MidiMessage::getTimeStamp), "getTimeStamp");
+		chai.add(chaiscript::fun(&MidiMessage::setTimeStamp), "setTimeStamp");
+		chai.add(chaiscript::fun(&MidiMessage::addToTimeStamp), "addToTimeStamp");
+		chai.add(chaiscript::fun(&MidiMessage::getNoteNumber), "getNoteNumber");
+		chai.add(chaiscript::fun(&MidiMessage::getVelocity), "getVelocity");
+		chai.add(chaiscript::fun(&MidiMessage::isNoteOn), "isNoteOn");
+		chai.add(chaiscript::fun(&MidiMessage::isNoteOff), "isNoteOff");
+
+		chai.add(chaiscript::user_type<PluginDescription>(), "PluginDescription");
+		chai.add(chaiscript::constructor<PluginDescription()>(), "PluginDescription");
+		chai.add(chaiscript::fun(&PluginDescription::loadFromXml), "loadFromXml");
+		chai.add(chaiscript::fun(&PluginDescription::name), "name");
+
+		chai.add(chaiscript::user_type<PluginWindow>(), "PluginWindow");
+		chai.add(chaiscript::fun(&PluginWindow::clear), "clear");
+		chai.add(chaiscript::fun(&PluginWindow::setEditor), "setEditor");
+
+		chai.add(chaiscript::user_type<String>(), "String");
+		chai.add(chaiscript::constructor<String(const std::string&)>(), "String");
+		chai.add(chaiscript::fun(static_cast<std::string(*)(String)>([](String s) { return s.toStdString(); })), "to_string");
+		
+		chai.add(chaiscript::user_type<XmlDocument>(), "XmlDocument");
+		chai.add(chaiscript::constructor<XmlDocument(String)>(), "XmlDocument");
+		chai.add(chaiscript::constructor<XmlDocument(File)>(), "XmlDocument");
+		chai.add(chaiscript::fun(&XmlDocument::getDocumentElement), "getDocumentElement");
+		
+		chai.add(chaiscript::user_type<XmlElement>(), "XmlElement");
+
+		/*lua.set_function("createEditorWindow", [](String name) { MessageManager::callAsync([&]() { new DocumentWindow(name, Colour{}, 6, true); }); });*/
+
+		/*lua.new_usertype<DocumentWindow>(
+		"DocumentWindow", sol::constructors<DocumentWindow(String, Colour, int, bool)>(),
+		//"DocumentWindow", sol::constructors<>(),
+		"setName", &DocumentWindow::setName,
+		"setTitleBarHeight", &DocumentWindow::setTitleBarHeight,
+		"setTitleBarTextCentred", &DocumentWindow::setTitleBarTextCentred,
+		"isResizable", &DocumentWindow::isResizable,
+		"setResizable", &DocumentWindow::setResizable,
+		"setContentOwned", &DocumentWindow::setContentOwned,
+		"isVisible", &DocumentWindow::isVisible,
+		"setVisible", &DocumentWindow::setVisible,
+		"setSize", &DocumentWindow::setSize
+		);*/
 
 		/*lua.new_usertype<AudioPluginFormat>(
 		//"AudioPluginFormat", sol::constructors<AudioPluginFormat()>(),
@@ -460,8 +557,10 @@ public:
 
 	}
 	
-	sol::state lua;
-	TCPServer tcpServer{ lua };
+	//sol::state lua;
+	//TCPServer tcpServer{ lua };
+	chaiscript::ChaiScript chai;
+	TCPServer tcpServer{ chai };
 	PluginWindow pluginWindow;
 
 	/*AudioPluginInstance* instance;

@@ -2,5 +2,5 @@
 
 <PLUGIN name="RC 48" format="VST" category="Effect" manufacturer="Native Instruments GmbH"
         version="V1.1.1" file="C:\Program Files\Native Instruments\VSTPlugins 64 bit\RC 48.dll"
-        uid="4e69243f" isInstrument="0" fileTime="14d91751e7d" infoUpdateTime="15f25338aaa"
+        uid="4e69243f" isInstrument="0" fileTime="14d91751e7d" infoUpdateTime="15f2ae52088"
         numInputs="2" numOutputs="2" isShell="0"/>

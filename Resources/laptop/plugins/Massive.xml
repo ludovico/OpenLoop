@@ -2,5 +2,5 @@
 
 <PLUGIN name="Massive" format="VST" category="Synth" manufacturer="Native Instruments GmbH"
         version="V1.5.1" file="C:\Program Files\Native Instruments\VSTPlugins 64 bit\Massive.dll"
-        uid="4e694d61" isInstrument="1" fileTime="15085f179f3" infoUpdateTime="15f253385ac"
+        uid="4e694d61" isInstrument="1" fileTime="15085f179f3" infoUpdateTime="15f2ae51ce1"
         numInputs="0" numOutputs="2" isShell="0"/>
