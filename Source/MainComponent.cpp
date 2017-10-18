@@ -207,7 +207,7 @@ public:
 		}
 
 		AudioSampleBuffer buffer(channels, totalNumChans, numSamples);
-
+		
 		{
 			const ScopedLock sl(lock);
 
@@ -217,18 +217,16 @@ public:
 				if (!processor->isSuspended()) {
 					if (processor->isUsingDoublePrecision()) {
 						conversionBuffer.makeCopyOf(buffer, true);
-						processor->processBlock(conversionBuffer, incomingMidi);
+						processor->processBlock(conversionBuffer, getMidiBuffer());
 						buffer.makeCopyOf(conversionBuffer, true);
 					} else {
-						processor->processBlock(buffer, incomingMidi);
+						processor->processBlock(buffer, getMidiBuffer());
 					}
 
 					return;
 				}
 			}
 		}
-
-		incomingMidi.clear();
 
 		for (int i = 0; i < numOutputChannels; ++i)
 			FloatVectorOperations::clear(outputChannelData[i], numSamples);
@@ -258,6 +256,7 @@ public:
 			setProcessor(oldProcessor);
 		}
 	}
+
 	void audioDeviceStopped() override {
 		const ScopedLock sl(lock);
 
@@ -270,6 +269,7 @@ public:
 		tempBuffer.setSize(1, 1);
 	}
 
+
 	AudioProcessor* processor = nullptr;
 	CriticalSection lock;
 	double sampleRate = 0;
@@ -277,9 +277,10 @@ public:
 	bool isPrepared = false, isDoublePrecision = true;
 	int numInputChans = 0, numOutputChans = 0;
 	HeapBlock<float*> channels;
+	// interesting case: for simplicity we generate a MidiBuffer object and return it. Gives us warning C4239.
+	std::function<MidiBuffer&()> getMidiBuffer = [&]() -> MidiBuffer& { MidiBuffer mb;  return std::move(mb); };
 	AudioBuffer<float> tempBuffer;
 	AudioBuffer<double> conversionBuffer;
-	MidiBuffer incomingMidi;
 };
 
 class TCPServer : public Thread {
@@ -368,7 +369,7 @@ public:
 		chai.add(chaiscript::base_class<AudioIODeviceCallback, AudioProcessorPlayerV2>());
 		chai.add(chaiscript::constructor<AudioProcessorPlayerV2()>(), "AudioProcessorPlayerV2");
 		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::setProcessor), "setProcessor");
-		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::incomingMidi), "incomingMidi");
+		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::getMidiBuffer), "getMidiBuffer");
 		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::lock), "lock");
 
 		chai.add(chaiscript::user_type<File>(), "File");
