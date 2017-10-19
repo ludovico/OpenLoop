@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <string>
 #include <functional>
+#include <chrono>
 //#include "../Source/sol.hpp"
 #include "chaiscript\chaiscript.hpp"
 #include "chaiscript\chaiscript_stdlib.hpp"
@@ -217,10 +218,10 @@ public:
 				if (!processor->isSuspended()) {
 					if (processor->isUsingDoublePrecision()) {
 						conversionBuffer.makeCopyOf(buffer, true);
-						processor->processBlock(conversionBuffer, getMidiBuffer());
+						processor->processBlock(conversionBuffer, getMidiBuffer(numSamples));
 						buffer.makeCopyOf(conversionBuffer, true);
 					} else {
-						processor->processBlock(buffer, getMidiBuffer());
+						processor->processBlock(buffer, getMidiBuffer(numSamples));
 					}
 
 					return;
@@ -278,7 +279,7 @@ public:
 	int numInputChans = 0, numOutputChans = 0;
 	HeapBlock<float*> channels;
 	// interesting case: for simplicity we generate a MidiBuffer object and return it. Gives us warning C4239.
-	std::function<MidiBuffer&()> getMidiBuffer = [&]() -> MidiBuffer& { MidiBuffer mb;  return std::move(mb); };
+	std::function<MidiBuffer&(int)> getMidiBuffer = [&](int) -> MidiBuffer& { MidiBuffer mb;  return std::move(mb); };
 	AudioBuffer<float> tempBuffer;
 	AudioBuffer<double> conversionBuffer;
 };
@@ -303,6 +304,7 @@ public:
 			MessageManager::callAsync([&, s]() {
 				try {
 					chai.eval(s);
+					std::cout << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << std::endl;
 				} catch (std::exception e) {
 					std::cout << e.what() << std::endl;
 				}
@@ -315,9 +317,7 @@ public:
 	StreamingSocket serverSocket;
 };
 
-auto constructMidiEventsFromCollectionWithinBufferRange = [](MidiBuffer* midiBuffer, double time, int numSamples) {
-
-};
+typedef std::map<double, chaiscript::Boxed_Value> eventmap;
 
 class MainContentComponent : public AudioAppComponent {
 public:
@@ -327,6 +327,12 @@ public:
 		setAudioChannels(2, 2);
 
 		//saveDesktopPlugins();
+
+		/*
+		Map from double to whatever.
+		Add this to chaiscript_stdlib.hpp.
+		bootstrap::standard_library::map_type<std::map<double, Boxed_Value>>("RealMap", *lib);
+		*/
 
 		chai.add(chaiscript::var(std::ref(deviceManager)), "deviceManager");
 		chai.add(chaiscript::var(std::ref(pluginWindow)), "pluginWindow");
@@ -418,6 +424,8 @@ public:
 		chai.add(chaiscript::fun(&MidiMessage::getVelocity), "getVelocity");
 		chai.add(chaiscript::fun(&MidiMessage::isNoteOn), "isNoteOn");
 		chai.add(chaiscript::fun(&MidiMessage::isNoteOff), "isNoteOff");
+		chai.add(chaiscript::fun(&MidiMessage::isActiveSense), "isActiveSense");
+		chai.add(chaiscript::fun(&MidiMessage::isSysEx), "isSysex");
 
 		chai.add(chaiscript::user_type<PluginDescription>(), "PluginDescription");
 		chai.add(chaiscript::constructor<PluginDescription()>(), "PluginDescription");
