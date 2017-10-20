@@ -334,6 +334,43 @@ public:
 		bootstrap::standard_library::map_type<std::map<double, Boxed_Value>>("RealMap", *lib);
 		*/
 
+		typedef std::map<double, chaiscript::Boxed_Value> RealMap;
+		typedef std::map<double, chaiscript::Boxed_Value>::iterator RealMapIterator;
+		chai.add(chaiscript::bootstrap::standard_library::map_type<RealMap>("RealMap"));
+
+
+		chai.add(chaiscript::fun(static_cast
+			<RealMapIterator(RealMap::*)(const double&)>
+			(&RealMap::lower_bound)), "lower_bound");
+		chai.add(chaiscript::fun(static_cast
+			<RealMapIterator(RealMap::*)() noexcept>
+			(&RealMap::begin)), "begin");
+		chai.add(chaiscript::fun(static_cast
+			<RealMapIterator(RealMap::*)()>
+			(&RealMap::end)), "end");
+			
+		typedef std::_Tree_iterator<std::_Tree_val<std::_Tree_simple_types<std::pair<const double, chaiscript::Boxed_Value>>>> _rmitertype;
+
+		chai.add(chaiscript::user_type<RealMapIterator>(), "RealMapIterator");
+		chai.add(chaiscript::fun(static_cast
+			<void(*)(RealMapIterator&)>
+			([](RealMapIterator& iter) { iter++; })), "++");
+		chai.add(chaiscript::fun(static_cast
+			<void(*)(RealMapIterator&)>
+			([](RealMapIterator& iter) { iter--; })), "--");
+		chai.add(chaiscript::fun(static_cast
+			<bool(*)(RealMapIterator&, RealMapIterator&)>
+			([](RealMapIterator& iter1, RealMapIterator& iter2) { return iter1 == iter2; })), "==");
+		chai.add(chaiscript::fun(static_cast
+			<bool(*)(RealMapIterator&, RealMapIterator&)>
+			([](RealMapIterator& iter1, RealMapIterator& iter2) { return iter1 != iter2; })), "!=");
+		chai.add(chaiscript::fun(static_cast
+			<double(*)(RealMapIterator&)>
+			([](RealMapIterator& iter) {return iter->first; })), "key");
+		chai.add(chaiscript::fun(static_cast
+			<chaiscript::Boxed_Value(*)(RealMapIterator&)>
+			([](RealMapIterator& iter) {return iter->second; })), "value");
+
 		chai.add(chaiscript::var(std::ref(deviceManager)), "deviceManager");
 		chai.add(chaiscript::var(std::ref(pluginWindow)), "pluginWindow");
 
