@@ -27,3 +27,30 @@ with such a database at the center, any musical idea can be added, and subsequen
 Another issue is naming - when you create music, you often just play something, and at a certain point you hit record for whatever reason - at that point, you shouldn't worry about a precise name - a timestamp will often do - and if this is recorded directly to a database, you can later query the database for items recorded the lately. Chances are, you will find what you are looking for based on its content, and the content leaves a queryable data trail - midi events, recording length, which input was used, when - so it should be easy to retrieve something you've made without having 100's of "untitled" projects that you have to open and close, because the project in every daw is usually a closed, non-interactable container.
 
 If you are coding music patterns, even this could be stored in a database in the same way. Audio graphs - connections between different processing units (eq, compressor, volume, sends) can be stored also. Every connection. Audio clips. Midi data. When you need it, you can "select" a subset of the database, and "play" it - and there is your sequencer, just a bit more liberated.
+
+### An alternative, a queue
+
+Another way to create a responsive system might be in the form of a queue. I still feel a lisp-type of lanugage - Clojure is great -it lets me express ideas more clearly, and at the same time it shields me from low-level details that I usually don't want to see. Clojure would be in another process, so communication would happen over an interprocess link of sorts.
+
+DAWs are for the most part deterministic - even the random bits are - the only part where max responsivity is needed is when the user interacts with the system - midi input, for example. The inputs could still be activated from another process, so one could have as good responsitivity as possible.
+
+For a message queue system to work one would have to build an API covering all needs. Trying to build a list:
+- open/close a file handle
+- open/close a vst (and its editor)
+- send vst state
+- specify a graph (including inputs and outputs) at any point in time (present -> future)
+- specify a graph for offline processing
+- as little logic in c++ as possible
+- assign midi and parameter messages to any node at any time (present -> future)
+- c++ should have a decent sample player and volume processor node
+- clear queue
+
+C++ could respond:
+- signal value of given nodes
+- advancement in samples for each callback call
+- send vst state
+- send midi and parameter input data (with timestamp) for clojure to record.
+
+Clojure should keep track of what is created, and take responsibility for freeing resources, and saving all state. Every entity in C++ would have an ID. C++ maintains the queue, where the most important queue is the audio callback queue, where the graph gets constructed every callback. C++ doesn't need to know anything about the files and its length, one wpuld utilize Clojure for file info. Time should be specified as seconds on the clojure side and converted to samples on the c++ side. Apart from plugin editors, GUI can be drawn in clojure/java, messages from the GUI sent immediately to queue, and state stored within clojure. Even waveforms can be drawn, as C++ only knows the file handle anyway.
+
+So is it is possible, then, to manipulate all state, using another language and its logic, and let c++ be a performant, but dumb receiver of messages?
