@@ -53,73 +53,74 @@ All message responses have an error field, which is a readable <string> intended
 *string* = a utf8-encoded string.
 *path* = a *string* representing a path. Path delimiter: '/'. Windows drive specifiers allowed.
 
+---
 ##### Returns the system samplerate
 msg: samplerate
 ##### return
 samplerate: *integer*
-
+---
 msg: get-input-channel
 ch: *integer*
 ##### return
 id: *integer*
-
+---
 msg: get-output-channel
 ch: *integer*
 ##### return
 id: *integer*
-
+---
 ##### Returns an id if successful.
 msg: load-plugin
 path: *path*
 ##### return
 id: *integer* or null
-
+---
 ##### Remove a plugin. Also removes the queue and updates the graph
 msg: remove-plugin
 id: *integer*
-
+---
 ##### Retrieves the state of a plugin
 msg: plugin-get-state
 id: *integer*
 ##### return
 state: *binary* or null
-
+---
 ##### Sets the state of a plugin
 msg: plugin-set-state
 id: *integer*
 state: *binary*
-
+---
 ##### Queue a sequence of midi messages. If sample < system sample, the midi message is delivered immediately
 msg: plugin-queue-midi
 id: *integer*
 midi: [ { sample: <integer>, bytes: [<midi-1>..<midi-N>] }+ ]
-
+---
 ##### Clears a midi queue from sample N. If sample is 0, clear the whole queue.
 msg: plugin-clear-queue-midi
 id: *integer*
 sample: *integer*
-
+---
 ##### Queue a sequence of parameters. If sample < system sample, the parameter is delivered immediately
 ##### Only VST3 has sample-accurate parameters, other formats gets updated for each buffer
 msg: plugin-queue-param
 id: *integer*
 params: [ { sample: <integer>, param: <integer>, value: <real> }+ ]
-
+---
 ##### Clears a parameter queue from sample N. If sample is 0, clear the whole queue.
 msg: plugin-clear-queue-midi
 id: *integer*
 sample: *integer*
-
+---
 ##### Load the wave file to memory. We might avoid the whole streaming scheme, by assuming that a user has a large amount of RAM. Streaming audio files from disks adds a complexity layer, but may be needed in the future. It depends on the use cases.
 msg: load-wav-to-memory
 path: *path*
 ##### return
 id: *integer* or null
-
+---
 ##### Remove file from memory
 msg: remove-wav-file
 id: *integer*
-
+---
 ##### Makes a connection between a source channel to a destination channel
 ##### This should (I think) cause the source to be processed in the callback.
 ##### The system will prevent you from making cyclic graphs.
@@ -129,7 +130,7 @@ source-id: *integer*
 dest-id: *integer*
 source-ch: *integer*
 dest-id: *integer*
-
+---
 ##### removes a connection
 ##### if source has no more connections, don't process the source in the callback
 msg: remove-connection
@@ -137,6 +138,6 @@ source-id: *integer*
 dest-id: *integer*
 source-ch: *integer*
 dest-id: *integer*
-
+---
 ##### clears all connections
 msg: clear-connections
