@@ -53,28 +53,28 @@ All message responses have an error field, which is a readable <string> intended
 *string* = a utf8-encoded string.
 *path* = a *string* representing a path. Path delimiter: '/'. Windows drive specifiers allowed.
 
----
-##### Returns the system samplerate
+
+// Returns the system samplerate
 msg: samplerate
-##### return
+// return
 samplerate: *integer*
----
+
 msg: get-input-channel
 ch: *integer*
-##### return
+// return
 id: *integer*
----
+
 msg: get-output-channel
 ch: *integer*
-##### return
+// return
 id: *integer*
----
-##### Returns an id if successful.
+
+// Returns an id if successful.
 msg: load-plugin
 path: *path*
-##### return
+// return
 id: *integer* or null
----
+
 ##### Remove a plugin. Also removes the queue and updates the graph
 msg: remove-plugin
 id: *integer*
