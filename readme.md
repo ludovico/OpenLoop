@@ -53,7 +53,7 @@ All message responses have an error field, which is a readable <string> intended
 *string* = a utf8-encoded string.
 *path* = a *string* representing a path. Path delimiter: '/'. Windows drive specifiers allowed.
 
-```
+```YAML
 # Returns the system samplerate
 msg: samplerate
 # return
@@ -106,10 +106,26 @@ msg: plugin-queue-param
 id: *integer*
 params: [ { sample: <integer>, param: <integer>, value: <real> }+ ]
 
-# Clears a parameter queue from sample N. If sample is 0, clear the whole queue.
+# Clears a parameter queue from sample N. If sample is null, clear the whole queue.
 msg: plugin-clear-queue-midi
 id: *integer*
-sample: *integer*
+sample: *integer* or null
+
+# Record a node to storage in 32 bit wav format. If sample-start is null, start recording immediately. If sample-end is null, the recording will continue until manually stopped. No recording if sample-start > sample-end.
+msg: record-node
+id: *integer*
+sample-start: *integer* or null
+sample-end: *integer* or null
+# return
+id: *integer*
+path: *generated-path*
+
+# Stop recording node, even if sample-end is specified.
+msg: stop-recording-node
+id: *integer*
+
+# Stop all recording
+msg: stop-recording
 
 # Load the wave file to memory. We might avoid the whole streaming scheme, by assuming that a user has a large amount of RAM. Streaming audio files from disks adds a complexity layer, but may be needed in the future. It depends on the use cases.
 msg: load-wav-to-memory
