@@ -38,7 +38,7 @@ For a message queue system to work one would have to build an API covering all n
 
 Clojure should keep track of what is created, and take responsibility for freeing resources, and saving all state. Every entity in C++ would have an ID. C++ maintains the queue, where the most important queue is the audio callback queue, where the graph gets constructed every callback (clarify!). C++ doesn't need to know anything about the files and its length, one would utilize Clojure for file info. Time should be specified as seconds on the clojure side and converted to samples on the c++ side (nope, that puts unnecessary logic in c++). Apart from plugin editors, GUI can be drawn in clojure/java, messages from the GUI sent immediately to queue, and state stored within clojure. Even waveforms of files can be drawn, as C++ only knows the file handle anyway.
 
-So is it is possible, then, to manipulate all state, using another language and its logic, and let c++ be a performant, but dumb receiver of messages?
+C++ maintains a queue for each plugin, clip, volume, and pan, in addition to the graph.
 
 ### A possible message API
 
@@ -59,13 +59,11 @@ msg: samplerate
 # return
 samplerate: *integer*
 
-msg: get-input-channel
-ch: *integer*
+msg: get-input-channels
 # return
 id: *integer*
 
-msg: get-output-channel
-ch: *integer*
+msg: get-output-channels
 # return
 id: *integer*
 
@@ -74,6 +72,34 @@ msg: load-plugin
 path: *path*
 # return
 id: *integer* or null
+
+# Returns a volume
+# volume is parameterized
+msg: create-volume
+volume: *real* or null # defaults to 1
+# return
+id: *integer* or null
+
+# Returns a panner
+# pan is parameterized
+msg: create-pan
+pan: *real or null # defaults to 0 (center)
+pan-law: "0db", "-3db", "-4.5db", "-6db" or null # defaults to -4.5 db
+# return
+id: *integer* or null
+
+# Queues a sound clip
+# Is a transient object, but id is returned for manipulation of playrate
+msg: queue-clip
+file: *integer*
+dest-id: *integer*
+dest-ch: *integer*
+at-sample: *integer* or null # defaults to immediately
+from-sample: *integer* or null # defaults to 0
+end-sample: *integer* or null # defaults to last sample
+playrate: *real* or null # defaults to 1
+# return
+id: *integer*
 
 # Remove a plugin. Also removes the queue and updates the graph
 msg: remove-plugin
@@ -89,6 +115,14 @@ state: *binary* or null
 msg: plugin-set-state
 id: *integer*
 state: *binary*
+
+# Opens plugin editor
+msg: plugin-open-editor
+id: *integer*
+
+# Closes plugin editor
+msg: plugin-close-editor
+id: *integer*
 
 # Queue a sequence of midi messages. If sample < system sample, the midi message is delivered immediately
 msg: plugin-queue-midi
@@ -141,11 +175,14 @@ id: *integer*
 # This should (I think) cause the source to be processed in the callback.
 # The system will prevent you from making cyclic graphs.
 # Delayed feedback loops can be added at a later stage
+# We should be able to limit the duration of the connection, even though most connections are stable. Even if the backend can make optimizations to save cpu by not processing nodes that does not play, we can be explicit here.
 msg: add-connection
 source-id: *integer*
 dest-id: *integer*
 source-ch: *integer*
 dest-id: *integer*
+(start-sample: *integer* or null) # defaults to 0 - create connection immediately
+(end-sample: *integer* or null) # defaults to 2**63 - keep connection forever
 
 # removes a connection
 # if source has no more connections, don't process the source in the callback
@@ -157,17 +194,35 @@ dest-id: *integer*
 
 # clears all connections
 msg: clear-connections
+
+# remove anything with an id
+msg: remove
+id: *integer*
 ```
+
+This message API depends on the programmer sending the right message to the right object at the right time. If a programmer sends a message to an object that doesn't exists, isn't playing, or an object of the wrong type, the message is simply ignored and not reported as an error.  
 
 ### Use cases
 
 ##### Monitor a microphone input
-If we got a microphone signal at input x that we want to play on the stereo speakers (y, z):
-
-{msg: get-input-channel, ch: x}
-
-{msg: get-output-channel, ch: y}
-
-{msg: get-output-channel, ch: z}
-
-{msg: add-connection, source-id:
+We got a microphone signal at input x that we want to monitor on the stereo speakers (y, z):
+```YAML
+{msg: get-input-channels} => input-id
+{msg: get-output-channels} => output-id
+{msg: add-connection, source-id: input-id, source-ch: 0, dest-id: output-id, dest-ch: 0}
+{msg: add-connection, source-id: input-id, source-ch: 0, dest-id: output-id, dest-ch: 1}
+```
+##### Add Altiverb reverb send
+Create a send for the input, at -12 db and and panned a bit to the right, open editor for plugin adjustments
+```YAML
+{msg: load-plugin, path: "c:/path/to/Altiverb 7.dll"} => altiverb-id
+{msg: create-volume, volume: 0.25} => send-volume-altiverb-id
+{msg: create-pan, pan: 0.4} => send-pan-altiverb-id
+{msg: add-connection, source-id: input-id, source-ch: 0, dest-id: send-volume-altiverb-id, dest-ch: 0}
+{msg: add-connection, source-id: send-volume-altiverb-id, source-ch: 0, dest-id: send-pan-altiverb-id, dest-ch: 0}
+{msg: add-connection, source-id: send-pan-altiverb-id, source-ch: 0, dest-id: altiverb-id, dest-ch: 0}
+{msg: add-connection, source-id: send-pan-altiverb-id, source-ch: 1, dest-id: altiverb-id, dest-ch: 1}
+{msg: add-connection, source-id: altiverb-id, source-ch: 0, dest-id: output-id, dest-ch: 0}
+{msg: add-connection, source-id: altiverb-id, source-ch: 1, dest-id: output-id, dest-ch: 1}
+{msg: plugin-open-editor, id: altiverb-id}
+```
