@@ -158,3 +158,16 @@ dest-id: *integer*
 # clears all connections
 msg: clear-connections
 ```
+
+### Use cases
+
+##### Monitor a microphone input
+If we got a microphone signal at input x that we want to play on the stereo speakers (y, z):
+
+{msg: get-input-channel, ch: x}
+
+{msg: get-output-channel, ch: y}
+
+{msg: get-output-channel, ch: z}
+
+{msg: add-connection, source-id:
