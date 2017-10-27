@@ -67,6 +67,10 @@ msg: get-output-channels
 # return
 id: *integer*
 
+msg: get-midi-inputs
+# return
+inputs: [ {name: <string>, id: <integer>}+ ]
+
 # Returns an id if successful.
 msg: load-plugin
 path: *path*
@@ -148,11 +152,19 @@ sample: *integer* or null
 # Record a node to storage in 32 bit wav format. If sample-start is null, start recording immediately. If sample-end is null, the recording will continue until manually stopped. No recording if sample-start > sample-end.
 msg: record-node
 id: *integer*
+path: <path>
 sample-start: *integer* or null
 sample-end: *integer* or null
 # return
 id: *integer*
-path: *generated-path*
+
+# Record midi data from input node.
+msg: record-midi
+id: *integer*
+sample-start: *integer* or null
+sample-end: *integer* or null
+# return
+mididata: [ <byte>+ ]
 
 # Stop recording node, even if sample-end is specified.
 msg: stop-recording-node
@@ -176,10 +188,11 @@ id: *integer*
 # The system will prevent you from making cyclic graphs.
 # Delayed feedback loops can be added at a later stage
 # We should be able to limit the duration of the connection, even though most connections are stable. Even if the backend can make optimizations to save cpu by not processing nodes that does not play, we can be explicit here.
+# This also accepts input midi->plugin
 msg: add-connection
 source-id: *integer*
-dest-id: *integer*
 source-ch: *integer*
+dest-id: *integer*
 dest-id: *integer*
 (start-sample: *integer* or null) # defaults to 0 - create connection immediately
 (end-sample: *integer* or null) # defaults to 2**63 - keep connection forever
@@ -198,6 +211,8 @@ msg: clear-connections
 # remove anything with an id
 msg: remove
 id: *integer*
+
+
 ```
 
 This message API depends on the programmer sending the right message to the right object at the right time. If a programmer sends a message to an object that doesn't exists, isn't playing, or an object of the wrong type, the message is simply ignored and not reported as an error.  
