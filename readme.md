@@ -1,6 +1,16 @@
 ### The OpenLoop project
 
-The OpenLoop is an experimental project, where the Juce Framework is exposed through ~~Lua~~ Chaiscript bindings. 
+The OpenLoop is an experimental project, where the Juce Framework is exposed through ~~Lua~~ ~~Chaiscript~~ ~~bindings~~ messages. 
+
+The Juce Framework is a powerful c++ library for audio developers. You have access to the main audio callback that sends samples to the audio interface, you've got plugin support with parameter control, MIDI, and audio file support. All major formats are supported, on all platforms. It is GPL-licenced, which is a permitting licence - anyone can use the library and share it, as long as their own work is GPL.
+
+JUCE was released in 2004, and is powerful enough that you can build a full-featured host on top of it, and distribute it for free as long as the code stays GPL. This is a gamechanger (for me!), because it enables lowly programmers (like me!) to 1: imagine a host and 2: create it.
+
+The most typical host is a DAW. The interface usually resembles an analog studio where you can see and touch everything, has a sequencer and a timeline, and total recall. A less typical host is Max/MSP, which is a visual programming language. Here you connect boxes on a screen, and that is your program. It is a simplification of programming, which is great if you don't want to touch code but still experiment. 
+
+I think there is room for a host where dynamic, text-based programming is the major mode of interaction. It would run against a backend which is responsible for the DSP processing (which is cpu-intensive and needs to be compiled). This split will exist for a long time, I don't see any serious DSP company moving away from C/C++ anytime soon. 
+
+The dynamic front-end language (which could be anything, I guess) should then be given as much control of the backend as possible. We can afford this to be relatively slow - the 
 
 Originally I wanted to use a lisp-type of language, but Chaiscript was the easiest to bind - and the most important thing for now is to get some sort of dynamism up and running. You won't find any setup guides here, as it is too early - this repo is mostly to get my brain going, and try to think of alternative ways of create, manipulate and store music data. Later I will try to make a setup guide of sorts.
 
