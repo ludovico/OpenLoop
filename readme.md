@@ -8,9 +8,9 @@ JUCE was released in 2004, and is powerful enough that you can build a full-feat
 
 The most typical host is a DAW. The interface usually resembles an analog studio where you can see and touch everything, has a sequencer and a timeline, and total recall. A less typical host is Max/MSP, which is a visual programming language. Here you connect boxes on a screen, and that is your program. It is a simplification of programming, which is great if you don't want to touch code but still experiment. 
 
-I think there is room for a host where dynamic, text-based programming is the major mode of interaction. It would run against a backend which is responsible for the DSP processing (which is cpu-intensive and needs to be compiled). This split will exist for a long time, I don't see any serious DSP company moving away from C/C++ anytime soon. 
+I think there is room for a host where dynamic, text-based programming is the major mode of interaction. It would run against a backend which is responsible for the DSP processing (which is cpu-intensive and needs to be compiled). This split will exist for a long time, I don't see any serious DSP company moving away from C/C++ anytime soon.
 
-The dynamic front-end language (which could be anything, I guess) should then be given as much control of the backend as possible. We can afford this to be relatively slow - the 
+The challenge is to design an API - mediating the boundary between the C++ backend and whatever frontend - that is as simple and expressive as possible. From the front-end perspective, which plugin format is irrelevant - either it has the capabilities (for sample-accurate parameters i.ex.) or not. Double vs float-processing should default to double. 
 
 Originally I wanted to use a lisp-type of language, but Chaiscript was the easiest to bind - and the most important thing for now is to get some sort of dynamism up and running. You won't find any setup guides here, as it is too early - this repo is mostly to get my brain going, and try to think of alternative ways of create, manipulate and store music data. Later I will try to make a setup guide of sorts.
 
