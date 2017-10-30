@@ -6,6 +6,7 @@
               cppLanguageStandard="latest" jucerVersion="5.1.2">
   <MAINGROUP id="PNpzZf" name="OpenLoop">
     <GROUP id="{E85F8FDF-F442-7B8C-88AB-CB4845AEBAE7}" name="Source">
+      <FILE id="UOzZWz" name="json.hpp" compile="0" resource="0" file="Source/json.hpp"/>
       <FILE id="MuEIrI" name="sol.hpp" compile="0" resource="0" file="Source/sol.hpp"/>
       <FILE id="qpdkZZ" name="MainComponent.cpp" compile="1" resource="0"
             file="Source/MainComponent.cpp"/>

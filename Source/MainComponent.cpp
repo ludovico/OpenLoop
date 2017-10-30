@@ -5,11 +5,46 @@
 #include <string>
 #include <functional>
 #include <chrono>
-//#include "../Source/sol.hpp"
-#include "chaiscript\chaiscript.hpp"
-#include "chaiscript\chaiscript_stdlib.hpp"
+#include "../Source/json.hpp"
 
 #pragma warning (disable : 4100)
+
+int nextId() {
+	static int id = 2;
+	return id++;
+}
+
+enum EntityType {
+	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels
+};
+
+struct Entity {
+	Entity(long id, EntityType type) : id{ id }, type{ type } {}
+	~Entity() {
+		if (type == EntityType::AudioFormatReaderType) {
+			delete audioFormatReader;
+		} else if (type == EntityType::AudioProcessorType) {
+			delete audioProcessor;
+		}
+	}
+	
+	long id;
+	AudioProcessor* audioProcessor;
+	AudioFormatReader* audioFormatReader;
+
+	EntityType type;
+};
+
+struct Connection {
+	Entity source;
+	int sourceCh;
+	Entity destination;
+	int destCh;
+};
+
+struct Graph {
+
+};
 
 String getMachine() {
 	if (File{ "c:/samples" }.exists()) {
@@ -284,209 +319,34 @@ public:
 	AudioBuffer<double> conversionBuffer;
 };
 
-class TCPServer : public Thread {
-public:
-	TCPServer(chaiscript::ChaiScript& chai) : Thread("tcp-server"), chai{ chai } {}
-
-	void run() override {
-		serverSocket.createListener(8989, "127.0.0.1");
-		char* buf = new char[50000];
-		while (true) {
-			auto connSocket = serverSocket.waitForNextConnection();
-			int i;
-			connSocket->read(&i, 4, true);
-			connSocket->read(buf, i, true);
-			buf[i] = 0;
-
-			auto utf8 = CharPointer_UTF8{ buf };
-			auto s = String{ utf8 }.toStdString();
-			
-			MessageManager::callAsync([&, s]() {
-				try {
-					chai.eval(s);
-					std::cout << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << std::endl;
-				} catch (std::exception e) {
-					std::cout << e.what() << std::endl;
-				}
-			});
-		}
-	}
-
-	//sol::state& lua;
-	chaiscript::ChaiScript& chai;
-	StreamingSocket serverSocket;
-};
-
-typedef std::map<double, chaiscript::Boxed_Value> eventmap;
-
 class MainContentComponent : public AudioAppComponent {
 public:
 	MainContentComponent() {
 		setSize(100, 100);
 		setTopLeftPosition(0, 700);
-		setAudioChannels(2, 2);
+		setAudioChannels(64, 64);
+		
+		AudioDeviceManager::AudioDeviceSetup ads;
+		deviceManager.getAudioDeviceSetup(ads);
+		ads.inputDeviceName = "ASIO Fireface USB";
+		ads.outputDeviceName = "ASIO Fireface USB";
+		ads.sampleRate = 44100;
+		ads.bufferSize = 256;
+		ads.useDefaultInputChannels = true;
+		ads.useDefaultOutputChannels = true;
+
+		deviceManager.closeAudioDevice();
+		deviceManager.setCurrentAudioDeviceType("ASIO", true);
+		deviceManager.setAudioDeviceSetup(ads, true);
+		deviceManager.initialise(64, 64, nullptr, true, "", &ads);
+
+		entities.fill(nullptr);
+		entities[0] = new Entity{ 0, EntityType::InputChannels };
+		entities[1] = new Entity{ 1, EntityType::OutputChannels };
+
 
 		//saveDesktopPlugins();
 
-		/*
-		Map from double to whatever.
-		Add this to chaiscript_stdlib.hpp.
-		bootstrap::standard_library::map_type<std::map<double, Boxed_Value>>("RealMap", *lib);
-		*/
-
-		typedef std::map<double, chaiscript::Boxed_Value> RealMap;
-		typedef std::map<double, chaiscript::Boxed_Value>::iterator RealMapIterator;
-		chai.add(chaiscript::bootstrap::standard_library::map_type<RealMap>("RealMap"));
-
-
-		chai.add(chaiscript::fun(static_cast
-			<RealMapIterator(RealMap::*)(const double&)>
-			(&RealMap::lower_bound)), "lower_bound");
-		chai.add(chaiscript::fun(static_cast
-			<RealMapIterator(RealMap::*)() noexcept>
-			(&RealMap::begin)), "begin");
-		chai.add(chaiscript::fun(static_cast
-			<RealMapIterator(RealMap::*)()>
-			(&RealMap::end)), "end");
-			
-		typedef std::_Tree_iterator<std::_Tree_val<std::_Tree_simple_types<std::pair<const double, chaiscript::Boxed_Value>>>> _rmitertype;
-
-		chai.add(chaiscript::user_type<RealMapIterator>(), "RealMapIterator");
-		chai.add(chaiscript::fun(static_cast
-			<void(*)(RealMapIterator&)>
-			([](RealMapIterator& iter) { iter++; })), "++");
-		chai.add(chaiscript::fun(static_cast
-			<void(*)(RealMapIterator&)>
-			([](RealMapIterator& iter) { iter--; })), "--");
-		chai.add(chaiscript::fun(static_cast
-			<bool(*)(RealMapIterator&, RealMapIterator&)>
-			([](RealMapIterator& iter1, RealMapIterator& iter2) { return iter1 == iter2; })), "==");
-		chai.add(chaiscript::fun(static_cast
-			<bool(*)(RealMapIterator&, RealMapIterator&)>
-			([](RealMapIterator& iter1, RealMapIterator& iter2) { return iter1 != iter2; })), "!=");
-		chai.add(chaiscript::fun(static_cast
-			<double(*)(RealMapIterator&)>
-			([](RealMapIterator& iter) {return iter->first; })), "key");
-		chai.add(chaiscript::fun(static_cast
-			<chaiscript::Boxed_Value(*)(RealMapIterator&)>
-			([](RealMapIterator& iter) {return iter->second; })), "value");
-
-		chai.add(chaiscript::var(std::ref(deviceManager)), "deviceManager");
-		chai.add(chaiscript::var(std::ref(pluginWindow)), "pluginWindow");
-
-		chai.add(chaiscript::user_type<AudioDeviceManager>(), "AudioDeviceManager");
-		chai.add(chaiscript::fun(&AudioDeviceManager::getCurrentAudioDeviceType), "getCurrentAudioDeviceType");
-		chai.add(chaiscript::fun(&AudioDeviceManager::getCpuUsage), "getCpuUsage");
-		chai.add(chaiscript::fun(&AudioDeviceManager::createStateXml), "createStateXml");
-		chai.add(chaiscript::fun(&AudioDeviceManager::playTestSound), "playTestSound");
-		chai.add(chaiscript::fun(&AudioDeviceManager::addAudioCallback), "addAudioCallback");
-		chai.add(chaiscript::fun(&AudioDeviceManager::removeAudioCallback), "removeAudioCallback");
-		chai.add(chaiscript::fun(&AudioDeviceManager::addMidiInputCallback), "addMidiInputCallback");
-		chai.add(chaiscript::fun(&AudioDeviceManager::removeMidiInputCallback), "removeMidiInputCallback");
-		chai.add(chaiscript::fun(&AudioDeviceManager::setMidiInputEnabled), "setMidiInputEnabled");
-
-		chai.add(chaiscript::user_type<AudioPluginFormatManager>(), "AudioPluginFormatManager");
-		chai.add(chaiscript::constructor<AudioPluginFormatManager()>(), "AudioPluginFormatManager");
-		chai.add(chaiscript::fun(&AudioPluginFormatManager::addDefaultFormats), "addDefaultFormats");
-		chai.add(chaiscript::fun(&AudioPluginFormatManager::createPluginInstance), "createPluginInstance");
-
-		chai.add(chaiscript::user_type<AudioPluginInstance>(), "AudioPluginInstance");
-		chai.add(chaiscript::base_class<AudioProcessor, AudioPluginInstance>());
-		
-		chai.add(chaiscript::user_type<AudioProcessor>(), "AudioProcessor");
-		chai.add(chaiscript::fun(&AudioProcessor::getName), "getName");
-		chai.add(chaiscript::fun(&AudioProcessor::getBusCount), "getBusCount");
-		chai.add(chaiscript::fun(&AudioProcessor::isUsingDoublePrecision), "isUsingDoublePrecision");
-		chai.add(chaiscript::fun(&AudioProcessor::getTotalNumInputChannels), "getTotalNumInputChannels");
-		chai.add(chaiscript::fun(&AudioProcessor::getTotalNumOutputChannels), "getTotalNumOutputChannels");
-		chai.add(chaiscript::fun(&AudioProcessor::getMainBusNumInputChannels), "getMainBusNumInputChannels");
-		chai.add(chaiscript::fun(&AudioProcessor::getMainBusNumOutputChannels), "getMainBusNumOutputChannels");
-		chai.add(chaiscript::fun(&AudioProcessor::acceptsMidi), "acceptsMidi");
-		chai.add(chaiscript::fun(&AudioProcessor::producesMidi), "producesMidi");
-		chai.add(chaiscript::fun(&AudioProcessor::reset), "reset");
-		chai.add(chaiscript::fun(&AudioProcessor::createEditor), "createEditor");
-		chai.add(chaiscript::fun(&AudioProcessor::createEditorIfNeeded), "createEditorIfNeeded");
-		chai.add(chaiscript::fun(&AudioProcessor::getStateInformation), "getStateInformation");
-
-		chai.add(chaiscript::user_type<AudioProcessorPlayerV2>(), "AudioProcessorPlayerV2");
-		chai.add(chaiscript::base_class<AudioIODeviceCallback, AudioProcessorPlayerV2>());
-		chai.add(chaiscript::constructor<AudioProcessorPlayerV2()>(), "AudioProcessorPlayerV2");
-		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::setProcessor), "setProcessor");
-		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::getMidiBuffer), "getMidiBuffer");
-		chai.add(chaiscript::fun(&AudioProcessorPlayerV2::lock), "lock");
-
-		chai.add(chaiscript::user_type<File>(), "File");
-		chai.add(chaiscript::constructor<File()>(), "File");
-		chai.add(chaiscript::constructor<File(const String&)>(), "File");
-		chai.add(chaiscript::fun(static_cast<File(*)(std::string)>([](std::string s) { return File{ s }; })), "File");
-		chai.add(chaiscript::fun(&File::exists), "exists");
-
-		chai.add(chaiscript::user_type<MidiBuffer>(), "MidiBuffer");
-		chai.add(chaiscript::constructor<MidiBuffer()>(), "MidiBuffer");
-		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)()>(&MidiBuffer::clear)), "clear");
-		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(int, int)>(&MidiBuffer::clear)), "clear");
-		chai.add(chaiscript::fun(&MidiBuffer::isEmpty), "isEmpty");
-		chai.add(chaiscript::fun(&MidiBuffer::getNumEvents), "getNumEvents");
-		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(const MidiMessage&, int)>(&MidiBuffer::addEvent)), "addEvent");
-		chai.add(chaiscript::fun(static_cast<void(MidiBuffer::*)(const void*, int, int)>(&MidiBuffer::addEvent)), "addEvent");
-		chai.add(chaiscript::fun(&MidiBuffer::addEvents), "addEvents");
-		chai.add(chaiscript::fun(&MidiBuffer::getFirstEventTime), "getFirstEventTime");
-		chai.add(chaiscript::fun(&MidiBuffer::getLastEventTime), "getLastEventTime");
-		chai.add(chaiscript::fun(&MidiBuffer::swapWith), "swapWith");
-		chai.add(chaiscript::fun(static_cast<bool(*)(MidiBuffer&, MidiBuffer&)>([](MidiBuffer& buf1, MidiBuffer& buf2) { return &buf1 == &buf2; })), "MidiBufferEqual");
-		chai.add(chaiscript::fun(static_cast<int(*)(MidiBuffer&)>([](MidiBuffer& buf) { return reinterpret_cast<int>(&buf); })), "address");
-
-		chai.add(chaiscript::user_type<MidiInput>(), "MidiInput");
-		chai.add(chaiscript::fun(MidiInput::getDevices), "MidiInputGetDevices");
-		chai.add(chaiscript::fun(MidiInput::openDevice), "MidiInputOpenDevice");
-		chai.add(chaiscript::fun(&MidiInput::getName), "getName");
-		chai.add(chaiscript::fun(&MidiInput::start), "start");
-		chai.add(chaiscript::fun(&MidiInput::stop), "stop");
-
-		chai.add(chaiscript::base_class<MidiInputCallback, MidiInputCallbackImpl>());
-		chai.add(chaiscript::user_type<MidiInputCallbackImpl>(), "MidiInputCallbackImpl");
-		chai.add(chaiscript::constructor<MidiInputCallbackImpl()>(), "MidiInputCallbackImpl");
-		chai.add(chaiscript::fun(&MidiInputCallbackImpl::handleIncomingMidiMessageFunc), "handleIncomingMidiMessageFunc");
-		chai.add(chaiscript::fun(&MidiInputCallbackImpl::handlePartialSysexMessageFunc), "handlePartialSysexMessageFunc");
-
-		chai.add(chaiscript::user_type<MidiMessage>(), "MidiMessage");
-		chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>(MidiMessage::noteOn)), "MidiMessageNoteOn");
-		chai.add(chaiscript::fun(static_cast<MidiMessage(*)(int, int, uint8)>(MidiMessage::noteOff)), "MidiMessageNoteOff");
-		chai.add(chaiscript::constructor<MidiMessage()>(), "MidiMessage");
-		chai.add(chaiscript::constructor<MidiMessage(int, int, int, double)>(), "MidiMessage");
-		chai.add(chaiscript::fun(&MidiMessage::getTimeStamp), "getTimeStamp");
-		chai.add(chaiscript::fun(&MidiMessage::setTimeStamp), "setTimeStamp");
-		chai.add(chaiscript::fun(&MidiMessage::addToTimeStamp), "addToTimeStamp");
-		chai.add(chaiscript::fun(&MidiMessage::getNoteNumber), "getNoteNumber");
-		chai.add(chaiscript::fun(&MidiMessage::getVelocity), "getVelocity");
-		chai.add(chaiscript::fun(&MidiMessage::isNoteOn), "isNoteOn");
-		chai.add(chaiscript::fun(&MidiMessage::isNoteOff), "isNoteOff");
-		chai.add(chaiscript::fun(&MidiMessage::isActiveSense), "isActiveSense");
-		chai.add(chaiscript::fun(&MidiMessage::isSysEx), "isSysex");
-
-		chai.add(chaiscript::user_type<PluginDescription>(), "PluginDescription");
-		chai.add(chaiscript::constructor<PluginDescription()>(), "PluginDescription");
-		chai.add(chaiscript::fun(&PluginDescription::loadFromXml), "loadFromXml");
-		chai.add(chaiscript::fun(&PluginDescription::name), "name");
-
-		chai.add(chaiscript::user_type<PluginWindow>(), "PluginWindow");
-		chai.add(chaiscript::fun(&PluginWindow::clear), "clear");
-		chai.add(chaiscript::fun(&PluginWindow::setEditor), "setEditor");
-
-		chai.add(chaiscript::user_type<GenericScopedLock<CriticalSection>>(), "ScopedLock");
-		chai.add(chaiscript::constructor<GenericScopedLock<CriticalSection>(const CriticalSection&)>(), "ScopedLock");
-
-		chai.add(chaiscript::user_type<String>(), "String");
-		chai.add(chaiscript::constructor<String(const std::string&)>(), "String");
-		chai.add(chaiscript::fun(static_cast<std::string(*)(String)>([](String s) { return s.toStdString(); })), "to_string");
-		
-		chai.add(chaiscript::user_type<XmlDocument>(), "XmlDocument");
-		chai.add(chaiscript::constructor<XmlDocument(String)>(), "XmlDocument");
-		chai.add(chaiscript::constructor<XmlDocument(File)>(), "XmlDocument");
-		chai.add(chaiscript::fun(&XmlDocument::getDocumentElement), "getDocumentElement");
-		
-		chai.add(chaiscript::user_type<XmlElement>(), "XmlElement");
-		
 		pluginWindow.toFront(true);
 		tcpServer.startThread();
 	}
@@ -496,7 +356,7 @@ public:
 	}
 
 	void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
-
+		this->sampleRate = sampleRate;
 	}
 
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
@@ -514,10 +374,116 @@ public:
 	void resized() override {
 
 	}
+
+	class TCPServer : public Thread {
+	public:
+		TCPServer(MainContentComponent* mcc) : Thread("tcp-server"), mcc{ mcc } {}
+
+		void run() override {
+			serverSocket.createListener(8989, "127.0.0.1");
+			char* buf = new char[1024 * 1024];
+			while (true) {
+				auto connSocket = serverSocket.waitForNextConnection();
+				int i;
+				connSocket->read(&i, 4, true);
+				connSocket->read(buf, i, true);
+				buf[i] = 0;
+
+				// we received a json!
+				auto utf8 = CharPointer_UTF8{ buf };
+				auto s = String{ utf8 }.toStdString();
+				auto msg = nlohmann::json::parse(s);
+
+				nlohmann::json reply;
+
+				if (msg["msgid"].is_null()) {
+					reply["error"] = "field \"msgid\" cannot be null";
+				} else if (msg["msg"] == "samplerate") {
+					reply["samplerate"] = mcc->sampleRate;
+				} else if (msg["msg"] == "get-input-channels") {
+					reply["id"] = 0;
+				} else if (msg["msg"] == "get-output-channels") {
+					reply["id"] = 1;
+				} else if (msg["msg"] == "load-plugin") {
+					if (msg["path"].is_string()) {
+						std::string path = msg["path"];
+						if (File::isAbsolutePath(String{ path })) {
+							auto file = File{ String{ path } };
+							if (file.exists()) {
+								auto xmlelem = XmlDocument::parse(file);
+								if (xmlelem != nullptr) {
+									PluginDescription pd;
+									if (pd.loadFromXml(*xmlelem)) {
+										AudioPluginFormatManager apfm;
+										apfm.addDefaultFormats();
+										auto api = apfm.createPluginInstance(pd, 44100, 256, String{});
+										if (api != nullptr) {
+											int id = nextId();
+											mcc->entities[id] = new Entity{ id, EntityType::AudioProcessorType };
+											mcc->entities[id]->audioProcessor = api;
+											reply["id"] = id;
+										} else {
+											reply["error"] = "couldn't load plugin";
+										}
+									} else {
+										reply["error"] = "not a valid plugin description";
+									}
+								} else {
+									reply["error"] = "not an xml";
+								}
+							} else {
+								reply["error"] = "file does not exist";
+							}
+						} else {
+							reply["error"] = "Not a valid path";
+						}
+					} else {
+						reply["error"] = "\"path\" field is null or it is not a string.";
+					}
+					reply["msgid"] = msg["msgid"];
+				} else if (msg["msg"] == "remove-plugin") {
+					if (msg["id"].is_number_integer()) {
+						int id = msg["id"];
+						if (mcc->entities[id] != nullptr) {
+							Entity* entity = mcc->entities[id];
+							if (entity->type == EntityType::AudioProcessorType) {
+								delete entity;
+								mcc->entities[id] = nullptr;
+							} else {
+								reply["error"] = "This id does not refer to a plugin. Check your programming logic!";
+							}
+						} else {
+							reply["error"] = "This id does not refer to anything! Check your programming logic!";
+						}
+					} else {
+						reply["error"] = "\"id\" field is null or not an integer id";
+					}
+				} else if (msg["msg"] == "add-connection") {
+					if (msg["source-id"].is_number_integer() && msg["source-ch"].is_number_integer() 
+						&& msg["dest-id"].is_number_integer() && msg["dest-ch"].is_number_integer()) {
+						
+					} else {
+						reply["error"] = "fields \"source-id\", \"source-ch\", \"dest-id\" and \"dest-ch\" must be present and contain an integer!";
+					}
+				}
+
+				reply["msgid"] = msg["msgid"];
+				auto replystring = reply.dump();
+				auto replybuf = replystring.data();
+				int replysize = strlen(replybuf);
+				connSocket->write(&replysize, 4);
+				connSocket->write(replybuf, replysize);
+			}
+		}
+
+		StreamingSocket serverSocket;
+		MainContentComponent* mcc;
+	};
 	
-	chaiscript::ChaiScript chai;
-	TCPServer tcpServer{ chai };
+	double sampleRate;
+	TCPServer tcpServer{ this };
 	PluginWindow pluginWindow;
+	std::array<Entity*, 1000> entities;
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainContentComponent)
 };
