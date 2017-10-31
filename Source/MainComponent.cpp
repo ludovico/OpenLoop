@@ -18,6 +18,18 @@ int nextId() {
 	return id++;
 }
 
+struct MidiInputDevice {
+	MidiInputDevice(String midiDeviceName, AudioDeviceManager& deviceManager, double sampleRate) {
+		midiMessageCollector.reset(sampleRate);
+		deviceManager.setMidiInputEnabled(midiDeviceName, true);
+		deviceManager.addMidiInputCallback(midiDeviceName, &midiMessageCollector);
+	}
+
+	//MidiInput* midiInput;
+	MidiMessageCollector midiMessageCollector;
+	MidiBuffer midiBuffer;
+};
+
 class PluginWindow : public DocumentWindow {
 public:
 	PluginWindow()
@@ -46,15 +58,30 @@ private:
 };
 
 enum EntityType {
-	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels
+	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels, MidiInputType
 };
 
 struct Entity {
 	Entity(long id, EntityType type) : id{ id }, type{ type } {}
+	Entity(long id, AudioProcessor* processor, double order, double sampleRate) : id{ id }, audioProcessor{ processor }, orderOfComputation{ order } {
+		type = EntityType::AudioProcessorType;
+		auto inputBuses = audioProcessor->getBusesLayout().inputBuses;
+		auto outputBuses = audioProcessor->getBusesLayout().outputBuses;
+		for (auto bus : inputBuses) {
+			numInputChannels += bus.size();
+		}
+		for (auto bus : outputBuses) {
+			numOutputChannels += bus.size();
+		}
+
+		audioProcessor->prepareToPlay(sampleRate, 256);
+	}
+	
 	~Entity() {
 		if (type == EntityType::AudioFormatReaderType) {
 			delete audioFormatReader;
 		} else if (type == EntityType::AudioProcessorType) {
+			audioProcessor->releaseResources();
 			delete audioProcessor;
 		}
 	}
@@ -70,6 +97,8 @@ struct Entity {
 			buffer.addFrom(destCh, 0, source->buffer.getReadPointer(sourceCh), numSamples);
 		}
 		if (type == EntityType::AudioProcessorType) {
+			ScopedLock lock(audioProcessor->getCallbackLock());
+
 			if (audioProcessor->supportsDoublePrecisionProcessing()) {
 				audioProcessor->processBlock(buffer, midibuffer);
 			} else {
@@ -177,187 +206,6 @@ void saveDesktopPlugins() {
 	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Guitar Rig 5.dll");
 }
 
-struct MidiInputCallbackImpl : public MidiInputCallback {
-	void handleIncomingMidiMessage(MidiInput* source, const MidiMessage& message) {
-		handleIncomingMidiMessageFunc(source, message);
-	}
-
-	void handlePartialSysexMessage(MidiInput* source, const uint8* messageData, int numBytesSoFar, double timestamp) {
-		handlePartialSysexMessageFunc(source, messageData, numBytesSoFar, timestamp);
-	}
-
-	std::function<void(MidiInput*, const MidiMessage&)> handleIncomingMidiMessageFunc = [](MidiInput*, const MidiMessage&) {};
-	std::function<void(MidiInput*, const uint8*, int, double)> handlePartialSysexMessageFunc = [](MidiInput*, const uint8*, int, double) {};
-};
-
-class AudioProcessorPlayerV2 : public AudioIODeviceCallback {
-public:
-	AudioProcessorPlayerV2() {}
-
-	virtual ~AudioProcessorPlayerV2() {
-		setProcessor(nullptr);
-	}
-
-	void setProcessor(AudioProcessor* processorToPlay) {
-		if (processor != processorToPlay) {
-			if (processorToPlay != nullptr && sampleRate > 0 && blockSize > 0) {
-				processorToPlay->setPlayConfigDetails(numInputChans, numOutputChans, sampleRate, blockSize);
-
-				bool supportsDouble = processorToPlay->supportsDoublePrecisionProcessing() && isDoublePrecision;
-
-				processorToPlay->setProcessingPrecision(supportsDouble ? AudioProcessor::doublePrecision
-					: AudioProcessor::singlePrecision);
-				processorToPlay->prepareToPlay(sampleRate, blockSize);
-			}
-
-			AudioProcessor* oldOne;
-
-			{
-				const ScopedLock sl(lock);
-				oldOne = isPrepared ? processor : nullptr;
-				processor = processorToPlay;
-				isPrepared = true;
-			}
-
-			if (oldOne != nullptr)
-				oldOne->releaseResources();
-		}
-	}
-
-	void setDoublePrecisionProcessing(bool doublePrecision) {
-		if (doublePrecision != isDoublePrecision) {
-			const ScopedLock sl(lock);
-
-			if (processor != nullptr) {
-				processor->releaseResources();
-
-				bool supportsDouble = processor->supportsDoublePrecisionProcessing() && doublePrecision;
-
-				processor->setProcessingPrecision(supportsDouble ? AudioProcessor::doublePrecision
-					: AudioProcessor::singlePrecision);
-				processor->prepareToPlay(sampleRate, blockSize);
-			}
-
-			isDoublePrecision = doublePrecision;
-		}
-	}
-
-	void audioDeviceIOCallback(const float** inputChannelData, int numInputChannels, float** outputChannelData, int numOutputChannels, int numSamples) override {
-		jassert(sampleRate > 0 && blockSize > 0);
-
-		int totalNumChans = 0;
-
-		if (numInputChannels > numOutputChannels) {
-			tempBuffer.setSize(numInputChannels - numOutputChannels, numSamples,
-				false, false, true);
-
-			// copy input to output / channels
-			for (int i = 0; i < numOutputChannels; ++i) {
-				channels[totalNumChans] = outputChannelData[i];
-				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
-				++totalNumChans;
-			}
-
-			// copy left-over inputs to temp / channels
-			for (int i = numOutputChannels; i < numInputChannels; ++i) {
-				channels[totalNumChans] = tempBuffer.getWritePointer(i - numOutputChannels);
-				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
-				++totalNumChans;
-			}
-		} else {
-			for (int i = 0; i < numInputChannels; ++i) {
-				channels[totalNumChans] = outputChannelData[i];
-				memcpy(channels[totalNumChans], inputChannelData[i], sizeof(float) * (size_t)numSamples);
-				++totalNumChans;
-			}
-
-			// zero mem if inputs < outputs
-			for (int i = numInputChannels; i < numOutputChannels; ++i) {
-				channels[totalNumChans] = outputChannelData[i];
-				zeromem(channels[totalNumChans], sizeof(float) * (size_t)numSamples);
-				++totalNumChans;
-			}
-		}
-
-		
-		// now buffer holds channels: all input data
-		AudioSampleBuffer buffer(channels, totalNumChans, numSamples);
-		
-		{
-			const ScopedLock sl(lock);
-
-			if (processor != nullptr) {
-				const ScopedLock sl2(processor->getCallbackLock());
-
-				if (!processor->isSuspended()) {
-					if (processor->isUsingDoublePrecision()) {
-						conversionBuffer.makeCopyOf(buffer, true);
-						processor->processBlock(conversionBuffer, getMidiBuffer(numSamples));
-						buffer.makeCopyOf(conversionBuffer, true);
-					} else {
-						processor->processBlock(buffer, getMidiBuffer(numSamples));
-					}
-
-					return;
-				}
-			}
-		}
-
-		for (int i = 0; i < numOutputChannels; ++i)
-			FloatVectorOperations::clear(outputChannelData[i], numSamples);
-	}
-
-	void audioDeviceAboutToStart(AudioIODevice* device) override {
-		auto newSampleRate = device->getCurrentSampleRate();
-		auto newBlockSize = device->getCurrentBufferSizeSamples();
-		auto numChansIn = device->getActiveInputChannels().countNumberOfSetBits();
-		auto numChansOut = device->getActiveOutputChannels().countNumberOfSetBits();
-
-		const ScopedLock sl(lock);
-
-		sampleRate = newSampleRate;
-		blockSize = newBlockSize;
-		numInputChans = numChansIn;
-		numOutputChans = numChansOut;
-
-		channels.calloc((size_t)jmax(numChansIn, numChansOut) + 2);
-
-		if (processor != nullptr) {
-			if (isPrepared)
-				processor->releaseResources();
-
-			auto* oldProcessor = processor;
-			setProcessor(nullptr);
-			setProcessor(oldProcessor);
-		}
-	}
-
-	void audioDeviceStopped() override {
-		const ScopedLock sl(lock);
-
-		if (processor != nullptr && isPrepared)
-			processor->releaseResources();
-
-		sampleRate = 0.0;
-		blockSize = 0;
-		isPrepared = false;
-		tempBuffer.setSize(1, 1);
-	}
-
-
-	AudioProcessor* processor = nullptr;
-	CriticalSection lock;
-	double sampleRate = 0;
-	int blockSize = 0;
-	bool isPrepared = false, isDoublePrecision = true;
-	int numInputChans = 0, numOutputChans = 0;
-	HeapBlock<float*> channels;
-	// interesting case: for simplicity we generate a MidiBuffer object and return it. Gives us warning C4239.
-	std::function<MidiBuffer&(int)> getMidiBuffer = [&](int) -> MidiBuffer& { MidiBuffer mb;  return std::move(mb); };
-	AudioBuffer<float> tempBuffer;
-	AudioBuffer<double> conversionBuffer;
-};
-
 class MainContentComponent : public AudioAppComponent {
 public:
 	MainContentComponent() {
@@ -420,10 +268,19 @@ public:
 		entities[1]->orderOfComputation = DBL_MAX;
 
 		playlist.push_back(entities[1]);
+
+		auto midiDeviceNames = MidiInput::getDevices();
+		for (int i = 0; i < midiDeviceNames.size(); i++) {
+			midiInputDevices.push_back(new MidiInputDevice(midiDeviceNames[i], deviceManager, sampleRate));
+			std::cout << "midi device at index " << i << ": " << midiDeviceNames[i] << "\n";
+		}
 	}
 
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
-		//bufferToFill.clearActiveBufferRegion();
+		for (auto& midi : midiInputDevices) {
+			midi->midiBuffer.clear();
+			midi->midiMessageCollector.removeNextBlockOfMessages(midi->midiBuffer, bufferToFill.numSamples);
+		}
 
 		entities[0]->buffer.setSize(entities[0]->numOutputChannels, bufferToFill.numSamples, false, false, true);
 		entities[0]->buffer.clear();
@@ -506,22 +363,7 @@ public:
 											auto api = apfm.createPluginInstance(pd, 44100, 256, String{});
 											if (api != nullptr) {
 												int id = nextId();
-												mcc->entities[id] = new Entity{ id, EntityType::AudioProcessorType };
-												mcc->entities[id]->audioProcessor = api;
-												mcc->entities[id]->orderOfComputation = msg["order"];
-												auto inputBuses = api->getBusesLayout().inputBuses;
-												auto outputBuses = api->getBusesLayout().outputBuses;
-												int numInputChannels = 0;
-												for (auto bus : inputBuses) {
-													numInputChannels += bus.size();
-												}
-												int numOutputChannels = 0;
-												for (auto bus : outputBuses) {
-													numOutputChannels += bus.size();
-												}
-												mcc->entities[id]->numInputChannels = numInputChannels;
-												mcc->entities[id]->numOutputChannels = numOutputChannels;
-												
+												mcc->entities[id] = new Entity{ id, api, msg["order"], mcc->sampleRate };												
 												reply["id"] = id;
 											} else {
 												reply["error"] = "couldn't load plugin";
@@ -655,6 +497,7 @@ public:
 	double sampleRate;
 	TCPServer tcpServer{ this };
 	PluginWindow pluginWindow;
+	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
 	std::vector<Connection*> calculationQueue; // sorted by sample
 	std::vector<Entity*> playlist; // sorted by order
