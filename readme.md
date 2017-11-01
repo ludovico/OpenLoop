@@ -10,19 +10,25 @@ The most typical host is a DAW. The interface usually resembles an analog studio
 
 I think there is room for a host where dynamic, text-based programming is the major mode of interaction. It would run against a backend which is responsible for the DSP processing (which is cpu-intensive and needs to be compiled). This split will exist for a long time, I don't see any serious DSP company moving away from C/C++ anytime soon.
 
-The challenge is to design an API - mediating the boundary between the C++ backend and whatever frontend - that is as simple and expressive as possible. From the front-end perspective, which plugin format is irrelevant - either it has the capabilities (for sample-accurate parameters i.ex.) or not. Double vs float-processing should default to double. 
+The challenge is to design an API - mediating the boundary between the C++ backend and whatever frontend - that is as simple and expressive as possible. From the front-end perspective, which plugin format is irrelevant - either it has the capabilities (for sample-accurate parameters i.ex.) or not. Double vs float-processing should default to double.
 
-Originally I wanted to use a lisp-type of language, but Chaiscript was the easiest to bind - and the most important thing for now is to get some sort of dynamism up and running. You won't find any setup guides here, as it is too early - this repo is mostly to get my brain going, and try to think of alternative ways of create, manipulate and store music data. Later I will try to make a setup guide of sorts.
+The intermediary goal is a frontend/backend solution that can recreate a typical DAW project. Not automatically, of course - but it should have the same capabilities: audio clip playback, automation, midi, mixer capabilities. Of course, this would be GUI-less - you specify this programmatically in the fronteend, and it is understood and played back by the backend. Solving this problem opens up for dynamic programmatic access to the project structure, and procedural generation.
 
-This project is a long-running quest to gain some control over my computer audio. I'm not particularly fond of coding in general - and I'd rather not have it as a job - but when I discovered SuperCollider in 2010, it changed my perspective towards using computers as a dynamic instrument. Being a musician, I value immediate feedback, and SC could, to some degree, convince me that the computer wasn't a static calculator.
+A later goal is to have a backend code base which is readable enough (Juce helps a lot here) to create new core functionality. Everything that is related to modiying the audio stream and samples directly has to be implemented in C++, and some type of modifications can not be applied as a plugin. Some types of processing are inherently non-realtime and cannot be expressed in a typical plugin - timestretching is a good example.
 
-The limitations of sequencers became more and more apparent while exploring sound stuff in SC. Sequencers seemed like just a collection of playable state, with much of the rigidity from analog studios and little of the charm. I don't think we need "virtual consoles" with 100+ faders which looks like old analog faders, for example. The console was the best you can do in the analog days, and there is no reason to stay there - yet it is the heart of every sequencer, and you use the mouse or a "dummy console" - a controller - to change its state.
+### The messaging approach
 
-While SuperCollider is great, it has a major - and dealbreaking flaw: Most of the great sounding code out there comes in the form of plugins, and plugin instruments, and SC has no vst/au/aax plugin support. 
+(From now on, the backend is in C++, and the frontend is in Clojure, as that is what I am using right now)
 
-While you don't see much daw innovation, there is a lot of plugin innovation (apart from the retro GUI stuff, slate and the like..), and some of the plugins outgrow their hosts, because they are getting increasingly more complex. Melodyne certainly did, and shipped their product with a standalone editor for convenience, and projects like Spat Revolution should have deeper access to the host. Such plugins need a far better system in the first place, as they require to see more state, and the plugin / host model might not be the best in the long term.
+DAWs are for the most part deterministic - the only part where max responsivity is needed is when the user interacts with the system - midi input, for example. This live midi input could be activated in C++ from Clojure, and C++ sends messages back to Clojure with the received midi data, which Clojure might record.
 
-I can't say what the next DAW should look or feel like, but I think the complexities of music and sound deserves a more complex tool. Scripting audio dynamically should really be a mandatory part of a DAW. A normal-sized project can have thousands of audio clips, and lots and lots of data and metadata. A soundtrack for a film is way larger. There is a whole lot of transformations one could do, if one were given access.
+The deterministic part is solved by queues in C++. Clojure sends messages ahead of time, specifying when something should happen, and C++ responds by playing it at the right time, sample-accurately. 
+
+Clojure should keep track of what is created, and take responsibility for freeing resources, and saving all state. Every entity in C++ would have an ID. C++ maintains the queue, where the most important queue is the audio callback queue, where the graph gets constructed every callback (clarify!). C++ doesn't need to know anything about the files and its length, one would utilize Clojure for file info. Time should be specified as seconds on the clojure side and converted to samples on the c++ side (nope, that puts unnecessary logic in c++). Apart from plugin editors, GUI can be drawn in clojure/java, messages from the GUI sent immediately to queue, and state stored within clojure. Even waveforms of files can be drawn, as C++ only knows the file handle anyway.
+
+C++ maintains a queue for each plugin, clip, volume, and pan, in addition to the graph.
+
+More to come here...
 
 ### A database at the heart
 
@@ -38,21 +44,9 @@ Another issue is naming - when you create music, you often just play something, 
 
 If you are coding music patterns, even this could be stored in a database in the same way. Audio graphs - connections between different processing units (eq, compressor, volume, sends) can be stored also. Every connection. Audio clips. Midi data. When you need it, you can "select" a subset of the database, and "play" it - and there is your sequencer, just a bit more liberated.
 
-### An alternative, a queue
-
-Another way to create a responsive system might be in the form of a queue. I still feel a lisp-type of lanugage would be great - i.ex. Clojure - it lets me express ideas more clearly, and at the same time it shields me from low-level details that I usually don't want to see. Clojure would be in another process, so communication would happen over an interprocess link of sorts.
-
-DAWs are for the most part deterministic - the only part where max responsivity is needed is when the user interacts with the system - midi input, for example. This live midi input could be activated in C++ from Clojure, in that case C++ has to send messages back to Clojure with the received midi data (as it is Clojure's job to record)
-
-For a message queue system to work one would have to build an API covering all needs. As a minimum, if you can play it in Pro Tools / Cubase / Reaper (minus the proprietary time stretching / variaudio / beat detective stuff), you should be able to play it here. Use cases would have to be tested against this API to see if this is the case. Preferably before anything is built.
-
-Clojure should keep track of what is created, and take responsibility for freeing resources, and saving all state. Every entity in C++ would have an ID. C++ maintains the queue, where the most important queue is the audio callback queue, where the graph gets constructed every callback (clarify!). C++ doesn't need to know anything about the files and its length, one would utilize Clojure for file info. Time should be specified as seconds on the clojure side and converted to samples on the c++ side (nope, that puts unnecessary logic in c++). Apart from plugin editors, GUI can be drawn in clojure/java, messages from the GUI sent immediately to queue, and state stored within clojure. Even waveforms of files can be drawn, as C++ only knows the file handle anyway.
-
-C++ maintains a queue for each plugin, clip, volume, and pan, in addition to the graph.
-
 ### A possible message API
 
-I've looked at different messaging formats, and found that YAML might be the way to go, so YAML is used to describe the formatting of messages to/from the audio system. Any other message format can be used, as long as it supports binary.
+I've looked at different messaging formats, and found that YAML might be the way to go, so ~~YAML~~ JSON is used to describe the formatting of messages to/from the audio system. Any other message format can be used, as long as it supports binary (actually binary can be send as plain text through a base64 encoding, so it's not a problem)
 
 All messages has a msgid field, which is generated by the caller, and copied to the response message of the callee. msgid could be an <integer>.
 All message responses have an error field, which is a readable <string> intended for the user.
