@@ -13,6 +13,95 @@
 
 constexpr int ENTITY_LIMIT = 1000;
 
+void checkValidField(const nlohmann::json& msg, const std::string& field) {
+	if (msg[field].is_null()) {
+		throw "field \"" + field + "\" must be present.";
+	}
+}
+
+int getIntegerInField(const nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_number_integer()) {
+		throw "field \"" + field + "\" must be an integer.";
+	}
+	return msg[field];
+}
+
+double getFloatInField(const nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_number_float()) {
+		throw "field \"" + field + "\" must be a floating point number.";
+	}
+	return msg[field];
+}
+
+std::string getStringInField(const nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_string()) {
+		throw "field \"" + field + "\" must be a string.";
+	}
+	return msg[field];
+}
+/*
+int getValidId(const nlohmann::json& msg, const std::string& field) {
+	int id = getIntegerInField(msg, field);
+	if (id < 0 && id >= ENTITY_LIMIT) {
+		throw "" + field + " is not within entity limits.";
+	}
+	return id;
+}
+
+Entity* getValidEntity(const nlohmann::json& msg, const std::string& field, std::array<Entity*, ENTITY_LIMIT>& entities) {
+	Entity* entity = entities[getValidId(msg, field)];
+	if (entity == nullptr) {
+		throw "" + field + " is null";
+	}
+	return entity;
+}*/
+
+File& getValidFile(const nlohmann::json& msg, const std::string& field) {
+	std::string path{ getStringInField(msg, field) };
+	String strpath{ path };
+	if (!File::isAbsolutePath(strpath)) {
+		throw path + " at " + field + " is not an absolute path.";
+	}
+	File file{ strpath };
+	if (!file.exists()) {
+		throw path + " does not exist.";
+	} else if (!file.isDirectory()) {
+		throw path + " is a directory.";
+	}
+	return file;
+}
+
+AudioPluginInstance* createNewPlugin(const nlohmann::json& msg, const std::string& field) {
+	/*auto xmlelem = XmlDocument::parse(getValidFile(msg, field));
+	if (xmlelem == nullptr) {
+		throw "File is not a valid xml.";
+	}
+	PluginDescription pd;
+	if (!pd.loadFromXml(*xmlelem)) {
+		throw "File is not a valid plugin description.";
+	}
+	AudioPluginFormatManager apfm;
+	apfm.addDefaultFormats();
+	auto api = apfm.createPluginInstance(pd, 44100, 256, String{});
+	if (api == nullptr) {
+		throw "Couldn't load plugin.";
+	}
+	return api;*/
+	return nullptr;
+}
+/*
+Entity* getPlugin(const nlohmann::json& msg, const std::string& field, const std::array<Entity*, ENTITY_LIMIT>& entities) {
+	//Entity* plugin = getValidEntity(msg, field, entities);
+	//if (plugin->type == EntityType::AudioProcessorType) {
+	//	throw "The id does not refer to a plugin.";
+	//}
+	//return plugin;
+	return nullptr;
+}*/
+
 int nextId() {
 	static int id = 2;
 	return id++;
@@ -87,15 +176,19 @@ struct Entity {
 	}
 
 	void process(int numSamples) {
-		auto midibuffer = MidiBuffer();
 		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		buffer.clear();
-		for (auto tup : getsInputFromEntityChannelToChannel) {
+		for (auto tup : getsAudioInputFromEntityChannelToChannel) {
 			Entity* source = std::get<0>(tup);
 			int sourceCh = std::get<1>(tup);
 			int destCh = std::get<2>(tup);
 			buffer.addFrom(destCh, 0, source->buffer.getReadPointer(sourceCh), numSamples);
 		}
+		midibuffer.clear();
+		for (auto src : midiSources) {
+			midibuffer.addEvents(*src, 0, numSamples, 0);
+		}
+		
 		if (type == EntityType::AudioProcessorType) {
 			ScopedLock lock(audioProcessor->getCallbackLock());
 
@@ -118,11 +211,13 @@ struct Entity {
 	int numInputChannels = 0;
 	int numOutputChannels = 0;
 	AudioBuffer<double> buffer;
+	MidiBuffer midibuffer;
 	double orderOfComputation = 0;
 	AudioProcessor* audioProcessor = nullptr;
 	PluginWindow* pluginWindow = nullptr;
 	AudioFormatReader* audioFormatReader = nullptr;
-	std::vector<std::tuple<Entity*, int, int>> getsInputFromEntityChannelToChannel;
+	std::vector<std::tuple<Entity*, int, int>> getsAudioInputFromEntityChannelToChannel;
+	std::vector<MidiBuffer*> midiSources;
 
 	EntityType type;
 };
@@ -338,148 +433,65 @@ public:
 				auto msg = nlohmann::json::parse(s);
 
 				nlohmann::json reply;
-
-				if (msg["msgid"].is_null()) {
-					reply["error"] = "field \"msgid\" cannot be null";
-				} else if (msg["msg"] == "samplerate") {
-					reply["samplerate"] = mcc->sampleRate;
-				} else if (msg["msg"] == "get-input-channels") {
-					reply["id"] = 0;
-				} else if (msg["msg"] == "get-output-channels") {
-					reply["id"] = 1;
-				} else if (msg["msg"] == "load-plugin") {
-					if (msg["path"].is_string()) {
-						std::string path = msg["path"];
-						if (msg["order"].is_number_float()) {
-							if (File::isAbsolutePath(String{ path })) {
-								auto file = File{ String{ path } };
-								if (file.exists()) {
-									auto xmlelem = XmlDocument::parse(file);
-									if (xmlelem != nullptr) {
-										PluginDescription pd;
-										if (pd.loadFromXml(*xmlelem)) {
-											AudioPluginFormatManager apfm;
-											apfm.addDefaultFormats();
-											auto api = apfm.createPluginInstance(pd, 44100, 256, String{});
-											if (api != nullptr) {
-												int id = nextId();
-												mcc->entities[id] = new Entity{ id, api, msg["order"], mcc->sampleRate };												
-												reply["id"] = id;
-											} else {
-												reply["error"] = "couldn't load plugin";
-											}
-										} else {
-											reply["error"] = "not a valid plugin description";
-										}
-									} else {
-										reply["error"] = "not an xml";
-									}
-								} else {
-									reply["error"] = "file does not exist";
-								}
-							} else {
-								reply["error"] = "Not a valid path";
-							}
-						} else {
-							reply["error"] = "\"order\" field is null or not a real number";
-						}
-					} else {
-						reply["error"] = "\"path\" field is null or it is not a string.";
-					}
+				try {
+					checkValidField(msg, "msgid");
 					reply["msgid"] = msg["msgid"];
-				} else if (msg["msg"] == "remove-plugin") {
-					if (msg["id"].is_number_integer()) {
-						int id = msg["id"];
-						if (id >= 0 && id < ENTITY_LIMIT) {
-							if (mcc->entities[id] != nullptr) {
-								Entity* entity = mcc->entities[id];
-								if (entity->type == EntityType::AudioProcessorType) {
-									delete entity;
-									mcc->entities[id] = nullptr;
-								} else {
-									reply["error"] = "This id does not refer to a plugin. Check your programming logic!";
-								}
-							} else {
-								reply["error"] = "This id does not refer to anything! Check your programming logic!";
-							}
-						} else {
-							reply["error"] = "This id is outside of the entity limits. Check your programming logic!";
-						}
-					} else {
-						reply["error"] = "\"id\" field is null or not an integer id";
-					}
-				} else if (msg["msg"] == "add-connection") {
-					if (msg["source-id"].is_number_integer() && msg["source-ch"].is_number_integer() 
-						&& msg["dest-id"].is_number_integer() && msg["dest-ch"].is_number_integer()) {
-						if (msg["source-id"] >= 0 && msg["dest-id"] >= 0 && msg["source-id"] < ENTITY_LIMIT && msg["dest-id"] < ENTITY_LIMIT) {
-							Entity* source = mcc->entities[msg["source-id"]];
-							Entity* dest = mcc->entities[msg["dest-id"]];
-							if (source != nullptr && dest != nullptr) {
-								int sourceCh = msg["source-ch"];
-								int destCh = msg["dest-ch"];
-								mcc->playlist.push_back(source);
-								dest->getsInputFromEntityChannelToChannel.push_back(std::make_tuple(source, sourceCh, destCh));
-							} else {
-								reply["error"] = "This id does not refer to anything. Check your...";
-							}
-						} else {
-							reply["error"] = "This id is outside of the entity limits. Check your programming logic!";
-						}
-					} else {
-						reply["error"] = "fields \"source-id\", \"source-ch\", \"dest-id\" and \"dest-ch\" must be present and contain an integer!";
-					}
-				} else if (msg["msg"] == "plugin-open-editor") {
-					if (msg["id"].is_number_integer()) {
-						if (msg["id"] >= 0 && msg["id"] < ENTITY_LIMIT) {
-							Entity* entity = mcc->entities[msg["id"]];
-							if (entity != nullptr) {
-								if (entity->type == EntityType::AudioProcessorType) {
-									if (entity->pluginWindow == nullptr) {
-										messageManager->callFunctionOnMessageThread([](void* ent) {
-											Entity* entity = static_cast<Entity*>(ent);
-											entity->pluginWindow = new PluginWindow();
-											entity->pluginWindow->setEditor(entity->audioProcessor->createEditorIfNeeded());
-											return ent; 
-										}, entity);
-									} else {
-										entity->pluginWindow->setVisible(true);
-									}
-								} else {
-									reply["error"] = "This id does not refer to a plugin. Check your programming logic!";
-								}
-							} else {
-								reply["error"] = "This id does not refer to anything. Check your...";
-							}
-						} else {
-							reply["error"] = "This id is outside of the entity limits. Check your programming logic!";
-						}
-					} else {
-						reply["error"] = "\"id\" field is null or not an integer id";
-					}
-				} else if (msg["msg"] == "plugin-close-editor") {
-					if (msg["id"].is_number_integer()) {
-						if (msg["id"] >= 0 && msg["id"] < ENTITY_LIMIT) {
-							Entity* entity = mcc->entities[msg["id"]];
-							if (entity != nullptr) {
-								if (entity->type == EntityType::AudioProcessorType) {
-									if (entity->pluginWindow != nullptr) {
-										entity->pluginWindow->setVisible(false);
-									} 
-								} else {
-									reply["error"] = "This id does not refer to a plugin. Check your programming logic!";
-								}
-							} else {
-								reply["error"] = "This id does not refer to anything. Check your...";
-							}
-						} else {
-							reply["error"] = "This id is outside of the entity limits. Check your programming logic!";
-						}
-					} else {
-						reply["error"] = "\"id\" field is null or not an integer id";
-					}
-				}
+					
+					if (msg["msg"] == "samplerate") {
+						reply["samplerate"] = mcc->sampleRate;
+					} else if (msg["msg"] == "get-input-channels") {
+						reply["id"] = 0;
+					} else if (msg["msg"] == "get-output-channels") {
+						reply["id"] = 1;
+					} else if (msg["msg"] == "load-plugin") {; 
+						double order = getFloatInField(msg, "order"); 
+						int id = nextId();
+						auto audioPluginInstance = createNewPlugin(msg, "path");
+						mcc->entities[id] = new Entity{ id, audioPluginInstance, order, mcc->sampleRate };						
+					} /*else if (msg["msg"] == "remove-plugin") {
+						auto plugin = getPlugin(msg, "id", mcc->entities);
+						delete plugin;
+						mcc->entities[msg["id"]] == nullptr;
+					} else if (msg["msg"] == "add-connection") {
+						Entity* source = getValidEntity(msg, "source-id", mcc->entities);
+						Entity* dest = getValidEntity(msg, "dest-id", mcc->entities);
+						int sourceCh = getIntegerInField(msg, "source-ch");
+						int destCh = getIntegerInField(msg, "dest-ch");
+						mcc->playlist.push_back(source);
+						dest->getsAudioInputFromEntityChannelToChannel.push_back(std::make_tuple(source, sourceCh, destCh));
+					} else if (msg["msg"] == "add-midi-connection") {
+						if ((msg["source-id"].is_number_integer() || msg["source-id"].is_string()) && msg["dest-id"].is_number_integer()) {
+							if (msg["dest-id"] >= 0 && msg["dest-id"] < ENTITY_LIMIT) {
 
-				reply["msgid"] = msg["msgid"];
+							} else {
+								reply["error"] = "Destination id is outside of entity limits.";
+							}
+						} else {
+							reply["error"] = "fields \"source-id\" and \"dest-id\" must be present. source-id must be an integer id (for plugins) or a string id (for midi). dest-id must be an integer id.";
+						}
+					} else if (msg["msg"] == "plugin-open-editor") {
+						Entity* entity = getPlugin(msg, "id", mcc->entities);
+						if (entity->pluginWindow == nullptr) {
+							messageManager->callFunctionOnMessageThread([](void* ent) {
+								Entity* entity = static_cast<Entity*>(ent);
+								entity->pluginWindow = new PluginWindow();
+								entity->pluginWindow->setEditor(entity->audioProcessor->createEditorIfNeeded());
+								return ent;
+							}, entity);
+						} else {
+							entity->pluginWindow->setVisible(true);
+						}
+					} else if (msg["msg"] == "plugin-close-editor") {
+						Entity* entity = getPlugin(msg, "id", mcc->entities);
+						if (entity->pluginWindow != nullptr) {
+							entity->pluginWindow->setVisible(false);
+						}
+					}
+					*/
+				} catch (std::string error) {
+					reply["error"] = error;
+				}
+				
 				auto replystring = reply.dump();
 				auto replybuf = replystring.data();
 				int replysize = strlen(replybuf);
