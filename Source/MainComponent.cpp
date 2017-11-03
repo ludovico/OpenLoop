@@ -8,6 +8,7 @@
 #include <chrono>
 #include "../Source/json.hpp"
 #include <algorithm>
+#include <deque>
 
 #pragma warning (disable : 4100)
 
@@ -124,21 +125,25 @@ struct Entity {
 		}
 	}
 
-	void process(int numSamples) {
+	void process(int sampleCount, int numSamples) {
 		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		buffer.clear();
 		for (auto& connection : audioSources) {
 			buffer.addFrom(connection.first->destCh, 0, connection.first->source->buffer.getReadPointer(connection.first->sourceCh), numSamples);
 		}
-		/*for (auto tup : getsAudioInputFromEntityChannelToChannel) {
-			Entity* source = std::get<0>(tup);
-			int sourceCh = std::get<1>(tup);
-			int destCh = std::get<2>(tup);
-			buffer.addFrom(destCh, 0, source->buffer.getReadPointer(sourceCh), numSamples);
-		}*/
+
 		midibuffer.clear();
 		for (auto src : midiSources) {
 			midibuffer.addEvents(*src, 0, numSamples, 0);
+		}
+
+		while (!midiQueue.empty() && midiQueue.front().getTimeStamp() < sampleCount) {
+			midiQueue.pop_front();
+		}
+
+		while (!midiQueue.empty() && midiQueue.front().getTimeStamp() < sampleCount + numSamples) {
+			midibuffer.addEvent(midiQueue.front(), midiQueue.front().getTimeStamp() - sampleCount);
+			midiQueue.pop_front();
 		}
 		
 		if (type == EntityType::AudioProcessorType) {
@@ -171,11 +176,10 @@ struct Entity {
 	std::unordered_map<Connection*, Connection*> audioSources;
 	std::unordered_map<Connection*, Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
+	std::deque<MidiMessage> midiQueue;
 
 	EntityType type;
 };
-
-
 
 ////////////////////////
 ////////////////////////
@@ -453,7 +457,7 @@ public:
 
 		std::sort(playlist.begin(), playlist.end(), [](Entity* a, Entity* b) { return a->orderOfComputation < b->orderOfComputation; });
 		for (auto entity : playlist) {
-			entity->process(bufferToFill.numSamples);
+			entity->process(sampleCount, bufferToFill.numSamples);
 		}
 
 		AudioBuffer<float> output;
@@ -462,7 +466,7 @@ public:
 			bufferToFill.buffer->copyFrom(i, bufferToFill.startSample, output.getReadPointer(i), bufferToFill.numSamples);
 		}
 
-		sample += bufferToFill.numSamples;
+		sampleCount += bufferToFill.numSamples;
 	}
 
 	void releaseResources() override {
@@ -493,7 +497,6 @@ public:
 				connSocket->read(buf, i, true);
 				buf[i] = 0;
 
-				// we received a json!
 				auto utf8 = CharPointer_UTF8{ buf };
 				auto s = String{ utf8 }.toStdString();
 				auto msg = nlohmann::json::parse(s);
@@ -569,6 +572,34 @@ public:
 							throw "Field \"source-id\" must be present and be either an integer or a string.";
 						}
 						getPlugin(msg, "dest-id", mcc->entities)->midiSources.push_back(midibuffer);
+					} else if (message == "plugin-queue-midi") {
+						auto entity = getPlugin(msg, "id", mcc->entities);
+						if (msg["midi"].is_array()) {
+							auto midivec = msg["midi"];
+							for (int i = 0; i < midivec.size(); i++) {
+								if (midivec[i].is_object()) {
+									auto obj = midivec[i];
+									auto sample = getIntegerInField(obj, "sample");
+									auto type = getStringInField(obj, "type");
+									if (type == "on") {
+										entity->midiQueue.push_back(MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel"))));
+										entity->midiQueue.back().setTimeStamp(sample);
+									} else if (type == "off") {
+										entity->midiQueue.push_back(MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel"))));
+										entity->midiQueue.back().setTimeStamp(sample);
+									} else if (type == "cc") {
+										entity->midiQueue.push_back(MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val"))));
+										entity->midiQueue.back().setTimeStamp(sample);
+									} else {
+										throw "midi type not understood.";
+									}
+								} else {
+									throw "array should contain objects";
+								}
+							}
+						} else {
+							throw "field midi does not exist or is not an array";
+						}
 					} else if (message == "plugin-open-editor") {
 						// consider a mechanism for default values for non-mandatory fields
 						int x, y;
@@ -582,6 +613,8 @@ public:
 					} else if (message == "plugin-close-editor") {
 						Entity* entity = getPlugin(msg, "id", mcc->entities);
 						entity->deleteEditorWindow();
+					} else if (message == "get-sample-time") {
+						reply["sample"] = mcc->sampleCount;
 					}
 					
 				} catch (std::string error) {
@@ -603,7 +636,7 @@ public:
 	AudioDeviceManager deviceManager;
 	AudioSourcePlayer audioSourcePlayer;
 	bool initialized = false;
-	int64 sample = 0;
+	int64 sampleCount = 0;
 	double sampleRate;
 	TCPServer tcpServer{ this };
 	std::vector<MidiInputDevice*> midiInputDevices;
