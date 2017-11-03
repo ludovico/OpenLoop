@@ -11,96 +11,11 @@
 
 #pragma warning (disable : 4100)
 
+using namespace std::string_literals;
+
 constexpr int ENTITY_LIMIT = 1000;
 
-void checkValidField(const nlohmann::json& msg, const std::string& field) {
-	if (msg[field].is_null()) {
-		throw "field \"" + field + "\" must be present.";
-	}
-}
-
-int getIntegerInField(const nlohmann::json& msg, const std::string& field) {
-	checkValidField(msg, field);
-	if (!msg[field].is_number_integer()) {
-		throw "field \"" + field + "\" must be an integer.";
-	}
-	return msg[field];
-}
-
-double getFloatInField(const nlohmann::json& msg, const std::string& field) {
-	checkValidField(msg, field);
-	if (!msg[field].is_number_float()) {
-		throw "field \"" + field + "\" must be a floating point number.";
-	}
-	return msg[field];
-}
-
-std::string getStringInField(const nlohmann::json& msg, const std::string& field) {
-	checkValidField(msg, field);
-	if (!msg[field].is_string()) {
-		throw "field \"" + field + "\" must be a string.";
-	}
-	return msg[field];
-}
-/*
-int getValidId(const nlohmann::json& msg, const std::string& field) {
-	int id = getIntegerInField(msg, field);
-	if (id < 0 && id >= ENTITY_LIMIT) {
-		throw "" + field + " is not within entity limits.";
-	}
-	return id;
-}
-
-Entity* getValidEntity(const nlohmann::json& msg, const std::string& field, std::array<Entity*, ENTITY_LIMIT>& entities) {
-	Entity* entity = entities[getValidId(msg, field)];
-	if (entity == nullptr) {
-		throw "" + field + " is null";
-	}
-	return entity;
-}*/
-
-File& getValidFile(const nlohmann::json& msg, const std::string& field) {
-	std::string path{ getStringInField(msg, field) };
-	String strpath{ path };
-	if (!File::isAbsolutePath(strpath)) {
-		throw path + " at " + field + " is not an absolute path.";
-	}
-	File file{ strpath };
-	if (!file.exists()) {
-		throw path + " does not exist.";
-	} else if (!file.isDirectory()) {
-		throw path + " is a directory.";
-	}
-	return file;
-}
-
-AudioPluginInstance* createNewPlugin(const nlohmann::json& msg, const std::string& field) {
-	/*auto xmlelem = XmlDocument::parse(getValidFile(msg, field));
-	if (xmlelem == nullptr) {
-		throw "File is not a valid xml.";
-	}
-	PluginDescription pd;
-	if (!pd.loadFromXml(*xmlelem)) {
-		throw "File is not a valid plugin description.";
-	}
-	AudioPluginFormatManager apfm;
-	apfm.addDefaultFormats();
-	auto api = apfm.createPluginInstance(pd, 44100, 256, String{});
-	if (api == nullptr) {
-		throw "Couldn't load plugin.";
-	}
-	return api;*/
-	return nullptr;
-}
-/*
-Entity* getPlugin(const nlohmann::json& msg, const std::string& field, const std::array<Entity*, ENTITY_LIMIT>& entities) {
-	//Entity* plugin = getValidEntity(msg, field, entities);
-	//if (plugin->type == EntityType::AudioProcessorType) {
-	//	throw "The id does not refer to a plugin.";
-	//}
-	//return plugin;
-	return nullptr;
-}*/
+MessageManager* messageManager;
 
 int nextId() {
 	static int id = 2;
@@ -114,32 +29,20 @@ struct MidiInputDevice {
 		deviceManager.addMidiInputCallback(midiDeviceName, &midiMessageCollector);
 	}
 
-	//MidiInput* midiInput;
 	MidiMessageCollector midiMessageCollector;
 	MidiBuffer midiBuffer;
 };
 
 class PluginWindow : public DocumentWindow {
 public:
-	PluginWindow()
-		:DocumentWindow("no plugin", Colour::fromHSV(0.0, 0.0, 0.0, 1.0), DocumentWindow::minimiseButton) {
-		setSize(100, 100);
-		setTopLeftPosition(0, 600);
-		setVisible(true);
-	}
-
-	void clear() {
-		clearContentComponent();
-		setSize(100, 100);
-		setName("no plugin");
-	}
-
-	void setEditor(AudioProcessorEditor* editor) {
-		clear();
+	PluginWindow(AudioProcessorEditor* editor, int x, int y)
+		:DocumentWindow("", Colour::fromHSV(0.0, 0.0, 0.0, 1.0), DocumentWindow::minimiseButton) {
 		if (editor != nullptr) {
 			setName(editor->getName());
-			setContentNonOwned(editor, true);
+			setContentOwned(editor, true);
 		}
+		setTopLeftPosition(x, y);
+		setVisible(true);
 	}
 
 private:
@@ -148,6 +51,18 @@ private:
 
 enum EntityType {
 	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels, MidiInputType
+};
+
+struct Entity;
+
+struct Connection {
+	Connection(Entity* src, int srcCh, Entity* dest, int destCh) : source{ src }, sourceCh{ srcCh }, destination{ dest }, destCh{ destCh } {}
+	Entity* source;
+	int sourceCh;
+	Entity* destination;
+	int destCh;
+	int64 startSample = 0;
+	int64 endSample = 4611686018427387904; // 2**62. 3 million years. Should be enough
 };
 
 struct Entity {
@@ -163,27 +78,64 @@ struct Entity {
 			numOutputChannels += bus.size();
 		}
 
-		audioProcessor->prepareToPlay(sampleRate, 256);
+		audioProcessor->prepareToPlay(sampleRate, 441);
 	}
 	
 	~Entity() {
 		if (type == EntityType::AudioFormatReaderType) {
 			delete audioFormatReader;
 		} else if (type == EntityType::AudioProcessorType) {
+			for (auto conn : audioSources) {
+				conn.first->source->audioDestinations.erase(conn.first);
+				delete conn.first;
+			}
+			for (auto conn : audioDestinations) {
+				conn.first->destination->audioSources.erase(conn.first);
+				delete conn.first;
+			}
+			deleteEditorWindow();
 			audioProcessor->releaseResources();
 			delete audioProcessor;
+		}
+	}
+
+	void createEditorWindow(int x, int y) {
+		std::tuple<Entity*, int, int> args = std::make_tuple(this, x, y);
+		if (pluginWindow == nullptr) {
+			messageManager->callFunctionOnMessageThread([](void* argsp) {
+				auto args = static_cast<std::tuple<Entity*, int, int>*>(argsp);
+				Entity* entity = std::get<0>(*args);
+				int x = std::get<1>(*args);
+				int y = std::get<2>(*args);
+				entity->pluginWindow = new PluginWindow(entity->audioProcessor->createEditorIfNeeded(), x, y);
+				return argsp;
+			}, &args);
+		}
+	}
+
+	void deleteEditorWindow() {
+		if (pluginWindow != nullptr) {
+			messageManager->callFunctionOnMessageThread([](void* ent) {
+				Entity* entity = static_cast<Entity*>(ent);
+				delete entity->pluginWindow;
+				entity->pluginWindow = nullptr;
+				return ent;
+			}, this);
 		}
 	}
 
 	void process(int numSamples) {
 		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		buffer.clear();
-		for (auto tup : getsAudioInputFromEntityChannelToChannel) {
+		for (auto& connection : audioSources) {
+			buffer.addFrom(connection.first->destCh, 0, connection.first->source->buffer.getReadPointer(connection.first->sourceCh), numSamples);
+		}
+		/*for (auto tup : getsAudioInputFromEntityChannelToChannel) {
 			Entity* source = std::get<0>(tup);
 			int sourceCh = std::get<1>(tup);
 			int destCh = std::get<2>(tup);
 			buffer.addFrom(destCh, 0, source->buffer.getReadPointer(sourceCh), numSamples);
-		}
+		}*/
 		midibuffer.clear();
 		for (auto src : midiSources) {
 			midibuffer.addEvents(*src, 0, numSamples, 0);
@@ -216,20 +168,111 @@ struct Entity {
 	AudioProcessor* audioProcessor = nullptr;
 	PluginWindow* pluginWindow = nullptr;
 	AudioFormatReader* audioFormatReader = nullptr;
-	std::vector<std::tuple<Entity*, int, int>> getsAudioInputFromEntityChannelToChannel;
+	std::unordered_map<Connection*, Connection*> audioSources;
+	std::unordered_map<Connection*, Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
 
 	EntityType type;
 };
 
-struct Connection {
-	Entity* source;
-	int sourceCh;
-	Entity* destination;
-	int destCh;
-	int64 startSample = 0;
-	int64 endSample = 4611686018427387904; // 2**62. 3 million years. Should be enough
-};
+
+
+////////////////////////
+////////////////////////
+//// ERROR HANDLING ////
+////////////////////////
+////////////////////////
+
+void checkValidField(nlohmann::json& msg, const std::string& field) {
+	if (msg[field].is_null()) {
+		throw "field \"" + field + "\" must be present.";
+	}
+}
+
+int getIntegerInField(nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_number_integer()) {
+		throw "field \"" + field + "\" must be an integer.";
+	}
+	return msg[field];
+}
+
+double getFloatInField(nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_number_float()) {
+		throw "field \"" + field + "\" must be a floating point number.";
+	}
+	return msg[field];
+}
+
+std::string getStringInField(nlohmann::json& msg, const std::string& field) {
+	checkValidField(msg, field);
+	if (!msg[field].is_string()) {
+		throw "field \"" + field + "\" must be a string.";
+	}
+	return msg[field];
+}
+
+int getValidId(nlohmann::json& msg, const std::string& field) {
+	int id = getIntegerInField(msg, field);
+	if (id < 0 && id >= ENTITY_LIMIT) {
+		throw "" + field + " is not within entity limits.";
+	}
+	return id;
+}
+
+Entity* getValidEntity(nlohmann::json& msg, const std::string& field, std::array<Entity*, ENTITY_LIMIT>& entities) {
+	Entity* entity = entities[getValidId(msg, field)];
+	if (entity == nullptr) {
+		throw "" + field + " is null";
+	}
+	return entity;
+}
+
+File getValidFile(nlohmann::json& msg, const std::string& field) {
+	std::string path{ getStringInField(msg, field) };
+	String strpath{ path };
+	if (!File::isAbsolutePath(strpath)) {
+		throw path + " at " + field + " is not an absolute path.";
+	}
+	File file{ strpath };
+	if (!file.exists()) {
+		throw path + " does not exist.";
+	} else if (file.isDirectory()) {
+		throw path + " is a directory.";
+	}
+	return file;
+}
+
+AudioPluginInstance* createNewPlugin(nlohmann::json& msg, const std::string& field) {
+	auto xmlelem = XmlDocument::parse(getValidFile(msg, field));
+	if (xmlelem == nullptr) {
+		throw "File is not a valid xml."s;
+	}
+	PluginDescription pd;
+	if (!pd.loadFromXml(*xmlelem)) {
+		throw "File is not a valid plugin description."s;
+	}
+	AudioPluginFormatManager apfm;
+	apfm.addDefaultFormats();
+	String error;
+	auto api = apfm.createPluginInstance(pd, 44100, 256, error);
+	if (api == nullptr) {
+		throw "Couldn't load plugin. " + error.toStdString();
+	}
+	return api;
+}
+
+Entity* getPlugin(nlohmann::json& msg, const std::string& field, std::array<Entity*, ENTITY_LIMIT>& entities) {
+	Entity* plugin = getValidEntity(msg, field, entities);
+	if (plugin->type != EntityType::AudioProcessorType) {
+		throw "The id does not refer to a plugin."s;
+	}
+	return plugin;
+}
+
+// ------------------------------------------------------------------------- //
+// ------------------------------------------------------------------------- //
 
 String getMachine() {
 	if (File{ "c:/samples" }.exists()) {
@@ -301,14 +344,15 @@ void saveDesktopPlugins() {
 	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Guitar Rig 5.dll");
 }
 
-class MainContentComponent : public AudioAppComponent {
+class MainContentComponent : public Component, public AudioSource {
 public:
 	MainContentComponent() {
 		setSize(100, 100);
 		setTopLeftPosition(0, 700);
-		setAudioChannels(64, 64);
+
+		messageManager = MessageManager::getInstance();
 		
-		if (getMachine() == "desktop") {
+		if (getMachine() == "deskto") {
 			AudioDeviceManager::AudioDeviceSetup ads;
 			deviceManager.getAudioDeviceSetup(ads);
 			ads.inputDeviceName = "ASIO Fireface USB";
@@ -321,17 +365,33 @@ public:
 			deviceManager.closeAudioDevice();
 			deviceManager.setCurrentAudioDeviceType("ASIO", true);
 			deviceManager.setAudioDeviceSetup(ads, true);
-			deviceManager.initialise(64, 64, nullptr, true, "", &ads);
+			String audioError = deviceManager.initialise(64, 64, nullptr, true, "", &ads);
+			jassert(audioError.isEmpty());
+
+			deviceManager.addAudioCallback(&audioSourcePlayer);
+			audioSourcePlayer.setSource(this);
+		} else {
+			String audioError = deviceManager.initialise(2, 2, nullptr, true);
+			jassert(audioError.isEmpty());
+
+			deviceManager.addAudioCallback(&audioSourcePlayer);
+			audioSourcePlayer.setSource(this);
 		}
 
 		//saveDesktopPlugins();
 
-		pluginWindow.toFront(true);
 		tcpServer.startThread();
 	}
 
 	~MainContentComponent() {
-		shutdownAudio();
+		audioSourcePlayer.setSource(nullptr);
+		deviceManager.removeAudioCallback(&audioSourcePlayer);
+		for (int i = 2; i < ENTITY_LIMIT; i++) {
+			if (entities[i] != nullptr) {
+				delete entities[i];
+			}
+		}
+		deviceManager.closeAudioDevice();
 	}
 
 	void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
@@ -348,6 +408,10 @@ public:
 		std::cout << "Active input channels: " << device->getActiveInputChannels().toString(2) << "\n";
 		std::cout << "Active output channels: " << device->getActiveOutputChannels().toString(2) << "\n";
 		std::cout << device->getLastError() << "\n";
+
+		if (initialized) {
+			return;
+		}
 
 		entities.fill(nullptr);
 
@@ -369,6 +433,8 @@ public:
 			midiInputDevices.push_back(new MidiInputDevice(midiDeviceNames[i], deviceManager, sampleRate));
 			std::cout << "midi device at index " << i << ": " << midiDeviceNames[i] << "\n";
 		}
+
+		initialized = true;
 	}
 
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
@@ -434,60 +500,90 @@ public:
 
 				nlohmann::json reply;
 				try {
+					auto message = getStringInField(msg, "msg");
+
 					checkValidField(msg, "msgid");
 					reply["msgid"] = msg["msgid"];
 					
-					if (msg["msg"] == "samplerate") {
+					if (message == "samplerate") {
 						reply["samplerate"] = mcc->sampleRate;
-					} else if (msg["msg"] == "get-input-channels") {
+					} else if (message == "get-input-channels") {
 						reply["id"] = 0;
-					} else if (msg["msg"] == "get-output-channels") {
+					} else if (message == "get-output-channels") {
 						reply["id"] = 1;
-					} else if (msg["msg"] == "load-plugin") {; 
+					} else if (message == "load-plugin") {; 
 						double order = getFloatInField(msg, "order"); 
 						int id = nextId();
-						auto audioPluginInstance = createNewPlugin(msg, "path");
-						mcc->entities[id] = new Entity{ id, audioPluginInstance, order, mcc->sampleRate };						
-					} /*else if (msg["msg"] == "remove-plugin") {
-						auto plugin = getPlugin(msg, "id", mcc->entities);
-						delete plugin;
-						mcc->entities[msg["id"]] == nullptr;
-					} else if (msg["msg"] == "add-connection") {
+						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), order, mcc->sampleRate };
+						mcc->playlist.push_back(mcc->entities[id]);
+						reply["id"] = id;
+					} else if (message == "remove-plugin") {
+						auto entity = getPlugin(msg, "id", mcc->entities);
+						// https://en.wikipedia.org/wiki/Erase%E2%80%93remove_idiom
+						mcc->playlist.erase(std::remove(mcc->playlist.begin(), mcc->playlist.end(), entity), mcc->playlist.end());
+						delete entity;
+						mcc->entities[msg["id"]] = nullptr;
+					} else if (message == "add-connection") {
+						Connection* conn = new Connection{ getValidEntity(msg, "source-id", mcc->entities), getIntegerInField(msg, "source-ch"), getValidEntity(msg, "dest-id", mcc->entities), getIntegerInField(msg, "dest-ch") };
+						conn->destination->audioSources[conn] = conn;
+						conn->source->audioDestinations[conn] = conn;
+					} else if (message == "remove-connection") {
 						Entity* source = getValidEntity(msg, "source-id", mcc->entities);
-						Entity* dest = getValidEntity(msg, "dest-id", mcc->entities);
 						int sourceCh = getIntegerInField(msg, "source-ch");
+						Entity* dest = getValidEntity(msg, "dest-id", mcc->entities);
 						int destCh = getIntegerInField(msg, "dest-ch");
-						mcc->playlist.push_back(source);
-						dest->getsAudioInputFromEntityChannelToChannel.push_back(std::make_tuple(source, sourceCh, destCh));
-					} else if (msg["msg"] == "add-midi-connection") {
-						if ((msg["source-id"].is_number_integer() || msg["source-id"].is_string()) && msg["dest-id"].is_number_integer()) {
-							if (msg["dest-id"] >= 0 && msg["dest-id"] < ENTITY_LIMIT) {
-
+						Connection* foundConn = nullptr;
+						for (auto conn : source->audioDestinations) {
+							if (conn.first->destination == dest && conn.first->sourceCh == sourceCh && conn.first->destCh == destCh) {
+								foundConn = conn.first;
+							}
+						}
+						if (foundConn == nullptr) { throw "Did not find connection."s; }
+						source->audioDestinations.erase(foundConn);
+						dest->audioSources.erase(foundConn);
+						delete foundConn;
+					} else if (message == "add-midi-connection") {
+						MidiBuffer* midibuffer;
+						if (msg["source-id"].is_number_integer()) {
+							midibuffer = &(getPlugin(msg, "source-id", mcc->entities)->midibuffer);
+						} else if (msg["source-id"].is_string()) {
+							auto str = getStringInField(msg, "source-id");
+							if (str == "m00") {
+								midibuffer = &(mcc->midiInputDevices[0]->midiBuffer);
+							} else if (str == "m01") {
+								midibuffer = &(mcc->midiInputDevices[1]->midiBuffer);
+							} else if (str == "m02") {
+								midibuffer = &(mcc->midiInputDevices[2]->midiBuffer);
+							} else if (str == "m03") {
+								midibuffer = &(mcc->midiInputDevices[3]->midiBuffer);
+							} else if (str == "m04") {
+								midibuffer = &(mcc->midiInputDevices[4]->midiBuffer);
+							} else if (str == "m05") {
+								midibuffer = &(mcc->midiInputDevices[5]->midiBuffer);
+							} else if (str == "m06") {
+								midibuffer = &(mcc->midiInputDevices[6]->midiBuffer);
 							} else {
-								reply["error"] = "Destination id is outside of entity limits.";
+								throw "valid midi inputs are m00-m06.";
 							}
 						} else {
-							reply["error"] = "fields \"source-id\" and \"dest-id\" must be present. source-id must be an integer id (for plugins) or a string id (for midi). dest-id must be an integer id.";
+							throw "Field \"source-id\" must be present and be either an integer or a string.";
 						}
-					} else if (msg["msg"] == "plugin-open-editor") {
-						Entity* entity = getPlugin(msg, "id", mcc->entities);
-						if (entity->pluginWindow == nullptr) {
-							messageManager->callFunctionOnMessageThread([](void* ent) {
-								Entity* entity = static_cast<Entity*>(ent);
-								entity->pluginWindow = new PluginWindow();
-								entity->pluginWindow->setEditor(entity->audioProcessor->createEditorIfNeeded());
-								return ent;
-							}, entity);
+						getPlugin(msg, "dest-id", mcc->entities)->midiSources.push_back(midibuffer);
+					} else if (message == "plugin-open-editor") {
+						// consider a mechanism for default values for non-mandatory fields
+						int x, y;
+						if (!msg["x"].is_number_integer() || !msg["y"].is_number_integer()) {
+							x = 10; y = 10;
 						} else {
-							entity->pluginWindow->setVisible(true);
+							x = msg["x"]; y = msg["y"];
 						}
-					} else if (msg["msg"] == "plugin-close-editor") {
 						Entity* entity = getPlugin(msg, "id", mcc->entities);
-						if (entity->pluginWindow != nullptr) {
-							entity->pluginWindow->setVisible(false);
-						}
+						entity->createEditorWindow(x, y);
+					} else if (message == "plugin-close-editor") {
+						Entity* entity = getPlugin(msg, "id", mcc->entities);
+						entity->deleteEditorWindow();
 					}
-					*/
+					
 				} catch (std::string error) {
 					reply["error"] = error;
 				}
@@ -501,14 +597,15 @@ public:
 		}
 
 		StreamingSocket serverSocket;
-		MessageManager* messageManager;
 		MainContentComponent* mcc;
 	};
 	
+	AudioDeviceManager deviceManager;
+	AudioSourcePlayer audioSourcePlayer;
+	bool initialized = false;
 	int64 sample = 0;
 	double sampleRate;
 	TCPServer tcpServer{ this };
-	PluginWindow pluginWindow;
 	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
 	std::vector<Connection*> calculationQueue; // sorted by sample
