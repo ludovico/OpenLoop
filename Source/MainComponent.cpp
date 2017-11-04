@@ -579,7 +579,7 @@ public:
 							for (int i = 0; i < midivec.size(); i++) {
 								if (midivec[i].is_object()) {
 									auto obj = midivec[i];
-									auto sample = getIntegerInField(obj, "sample");
+									auto sample = getFloatInField(obj, "sample");
 									auto type = getStringInField(obj, "type");
 									if (type == "on") {
 										entity->midiQueue.push_back(MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel"))));
