@@ -351,7 +351,7 @@ void saveDesktopPlugins() {
 class MainContentComponent : public Component, public AudioSource {
 public:
 	MainContentComponent() {
-		setSize(100, 100);
+		setSize(100, 200);
 		setTopLeftPosition(0, 700);
 
 		messageManager = MessageManager::getInstance();
