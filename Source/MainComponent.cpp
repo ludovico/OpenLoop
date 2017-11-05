@@ -125,7 +125,7 @@ struct Entity {
 		}
 	}
 
-	void process(int sampleCount, int numSamples) {
+	void process(int64 sampleCount, int numSamples) {
 		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		buffer.clear();
 		for (auto& connection : audioSources) {
@@ -137,12 +137,12 @@ struct Entity {
 			midibuffer.addEvents(*src, 0, numSamples, 0);
 		}
 
-		while (!midiQueue.empty() && midiQueue.front().getTimeStamp() < sampleCount) {
+		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount) {
 			midiQueue.pop_front();
 		}
 
-		while (!midiQueue.empty() && midiQueue.front().getTimeStamp() < sampleCount + numSamples) {
-			midibuffer.addEvent(midiQueue.front(), midiQueue.front().getTimeStamp() - sampleCount);
+		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount + numSamples) {
+			midibuffer.addEvent(std::get<1>(midiQueue.front()), std::get<0>(midiQueue.front()) - sampleCount);
 			midiQueue.pop_front();
 		}
 		
@@ -176,7 +176,7 @@ struct Entity {
 	std::unordered_map<Connection*, Connection*> audioSources;
 	std::unordered_map<Connection*, Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
-	std::deque<MidiMessage> midiQueue;
+	std::deque<std::tuple<int64, MidiMessage>> midiQueue;
 
 	EntityType type;
 };
@@ -193,7 +193,7 @@ void checkValidField(nlohmann::json& msg, const std::string& field) {
 	}
 }
 
-int getIntegerInField(nlohmann::json& msg, const std::string& field) {
+int64 getIntegerInField(nlohmann::json& msg, const std::string& field) {
 	checkValidField(msg, field);
 	if (!msg[field].is_number_integer()) {
 		throw "field \"" + field + "\" must be an integer.";
@@ -527,7 +527,7 @@ public:
 						delete entity;
 						mcc->entities[msg["id"]] = nullptr;
 					} else if (message == "add-connection") {
-						Connection* conn = new Connection{ getValidEntity(msg, "source-id", mcc->entities), getIntegerInField(msg, "source-ch"), getValidEntity(msg, "dest-id", mcc->entities), getIntegerInField(msg, "dest-ch") };
+						Connection* conn = new Connection{ getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
 						conn->destination->audioSources[conn] = conn;
 						conn->source->audioDestinations[conn] = conn;
 					} else if (message == "remove-connection") {
@@ -579,17 +579,14 @@ public:
 							for (int i = 0; i < midivec.size(); i++) {
 								if (midivec[i].is_object()) {
 									auto obj = midivec[i];
-									auto sample = getFloatInField(obj, "sample");
+									auto sample = getIntegerInField(obj, "sample");
 									auto type = getStringInField(obj, "type");
 									if (type == "on") {
-										entity->midiQueue.push_back(MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel"))));
-										entity->midiQueue.back().setTimeStamp(sample);
+										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
 									} else if (type == "off") {
-										entity->midiQueue.push_back(MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel"))));
-										entity->midiQueue.back().setTimeStamp(sample);
+										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
 									} else if (type == "cc") {
-										entity->midiQueue.push_back(MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val"))));
-										entity->midiQueue.back().setTimeStamp(sample);
+										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val")))));
 									} else {
 										throw "midi type not understood.";
 									}
@@ -600,6 +597,10 @@ public:
 						} else {
 							throw "field midi does not exist or is not an array";
 						}
+					} else if (message == "plugin-clear-queue-midi") {
+						auto entity = getPlugin(msg, "id", mcc->entities);
+						entity->midiQueue.clear();
+						entity->audioProcessor->reset();
 					} else if (message == "plugin-open-editor") {
 						// consider a mechanism for default values for non-mandatory fields
 						int x, y;
