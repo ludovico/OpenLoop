@@ -51,7 +51,7 @@ private:
 };
 
 enum EntityType {
-	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels, MidiInputType
+	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels
 };
 
 struct Entity;
@@ -63,7 +63,7 @@ struct Connection {
 	Entity* destination;
 	int destCh;
 	int64 startSample = 0;
-	int64 endSample = 4611686018427387904; // 2**62. 3 million years. Should be enough
+	int64 endSample = 4611686018427387904; // 2**62. 3 million years in 44k. Should be enough
 };
 
 struct Entity {
