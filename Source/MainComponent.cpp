@@ -9,19 +9,99 @@
 #include "../Source/json.hpp"
 #include <algorithm>
 #include <deque>
+#include <unordered_set>
+#include <set>
 
 #pragma warning (disable : 4100)
 
 using namespace std::string_literals;
 
-constexpr int ENTITY_LIMIT = 1000;
+constexpr int ENTITY_LIMIT = 10000;
+constexpr int CONN_LIMIT = 100000;
+
+int entityId = 1;
+
+int nextEntityId() {
+	entityId += 1;
+	return entityId;
+}
+
+int connId = -1;
+
+int nextConnId() {
+	connId += 1;
+	return connId;
+}
 
 MessageManager* messageManager;
 
-int nextId() {
-	static int id = 2;
-	return id++;
+typedef bool(*AudioCallbackFunctionQueueCompare)(std::tuple<int64, std::function<void(int)>>, std::tuple<int64, std::function<void(int)>>);
+
+bool audioCallbackFunctionQueueCompare2(std::tuple<int64, std::function<void(int)>> a, std::tuple<int64, std::function<void(int)>> b) {
+	return std::get<0>(a) < std::get<0>(b);
 }
+
+AudioCallbackFunctionQueueCompare audioCallbackFunctionQueueCompare = audioCallbackFunctionQueueCompare2;
+
+/*
+struct SoundFileProcessor : public AudioProcessor {
+	const String getName() const override { return "SoundFileProcessor"; }
+	void prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock) override {}
+	void releaseResources() override {}
+	void processBlock(AudioBuffer<float>& buffer, MidiBuffer& midiMessages) override {}
+	void processBlock(AudioBuffer<double>& buffer, MidiBuffer& midiMessages) override {
+		
+	}
+	bool supportsDoublePrecisionProcessing() const override { return true; }
+	double getTailLengthSeconds() const override { return 0; }
+	bool acceptsMidi() const override { return true; }
+	bool producesMidi() const override { return false; }
+	AudioProcessorEditor* createEditor() override { return nullptr; }
+	bool hasEditor() const override { return false; }
+	int getNumPrograms() override { return 0; }
+	int getCurrentProgram() override { return 0; }
+	void setCurrentProgram(int index) override {}
+	const String getProgramName(int index) override { return ""; }
+	void changeProgramName(int index, const String& newName) override {}
+	void getStateInformation(MemoryBlock& destData) override {}
+	void setStateInformation(const void* data, int sizeInBytes) override {}
+
+	AudioFormatReader* afr;
+	int64 sample;
+};
+*/
+
+struct SoundFileProcessor  {
+	SoundFileProcessor(int sampleInCallback, AudioFormatReader* afr, int64 startSample, int64 length) : sampleInDestBuffer{ sampleInCallback }, afr{ afr }, startSample{ startSample } {
+		positionInFile = startSample;
+		endSample = startSample + length;
+		if (endSample > afr->lengthInSamples) {
+			endSample = afr->lengthInSamples;
+		}
+	}
+
+	void processBlock(AudioBuffer<double>& buffer, MidiBuffer& midiMessages) {
+		floatbuffer.setSize(afr->numChannels, buffer.getNumSamples(), false, false, true);
+		floatbuffer.clear();
+		int numSamplesToCopy = std::min(buffer.getNumSamples() - sampleInDestBuffer, static_cast<int>(endSample - positionInFile));
+		afr->read(&floatbuffer, sampleInDestBuffer, numSamplesToCopy, positionInFile, true, true);
+		buffer.makeCopyOf(floatbuffer, true);
+		sampleInDestBuffer = 0;
+		if (positionInFile + numSamplesToCopy >= endSample) {
+			done = true;
+		} else {
+			positionInFile += numSamplesToCopy;
+		}
+	}
+
+	bool done = false;
+	AudioBuffer<float> floatbuffer;
+	AudioFormatReader* afr;
+	int sampleInDestBuffer;
+	int64 startSample;
+	int64 endSample;
+	int64 positionInFile;
+};
 
 struct MidiInputDevice {
 	MidiInputDevice(String midiDeviceName, AudioDeviceManager& deviceManager, double sampleRate) {
@@ -51,13 +131,18 @@ private:
 };
 
 enum EntityType {
+<<<<<<< HEAD
 	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels
+=======
+	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels, MidiInputType, SoundFileProcessorType
+>>>>>>> origin/master
 };
 
 struct Entity;
 
 struct Connection {
-	Connection(Entity* src, int srcCh, Entity* dest, int destCh) : source{ src }, sourceCh{ srcCh }, destination{ dest }, destCh{ destCh } {}
+	Connection(int id, Entity* src, int srcCh, Entity* dest, int destCh) : id{ id }, source { src }, sourceCh{ srcCh }, destination{ dest }, destCh{ destCh } {}
+	int id;
 	Entity* source;
 	int sourceCh;
 	Entity* destination;
@@ -82,17 +167,21 @@ struct Entity {
 		audioProcessor->prepareToPlay(sampleRate, 441);
 	}
 	
+	Entity(long id, SoundFileProcessor* soundFileProcessor) : id{ id }, soundFileProcessor{ soundFileProcessor } {
+		orderOfComputation = DBL_MIN;
+	}
+	
 	~Entity() {
 		if (type == EntityType::AudioFormatReaderType) {
 			delete audioFormatReader;
 		} else if (type == EntityType::AudioProcessorType) {
 			for (auto conn : audioSources) {
-				conn.first->source->audioDestinations.erase(conn.first);
-				delete conn.first;
+				conn->source->audioDestinations.erase(conn);
+				delete conn;
 			}
 			for (auto conn : audioDestinations) {
-				conn.first->destination->audioSources.erase(conn.first);
-				delete conn.first;
+				conn->destination->audioSources.erase(conn);
+				delete conn;
 			}
 			deleteEditorWindow();
 			audioProcessor->releaseResources();
@@ -129,7 +218,7 @@ struct Entity {
 		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		buffer.clear();
 		for (auto& connection : audioSources) {
-			buffer.addFrom(connection.first->destCh, 0, connection.first->source->buffer.getReadPointer(connection.first->sourceCh), numSamples);
+			buffer.addFrom(connection->destCh, 0, connection->source->buffer.getReadPointer(connection->sourceCh), numSamples);
 		}
 
 		midibuffer.clear();
@@ -157,6 +246,13 @@ struct Entity {
 				audioProcessor->processBlock(floatbuffer, midibuffer);
 				buffer.makeCopyOf(floatbuffer);
 			}
+		} else if (type == EntityType::SoundFileProcessorType) {
+			soundFileProcessor->processBlock(buffer, midibuffer);
+			if (soundFileProcessor->done) {
+				/*mcc->audioCallbackFunctionQueue.insert(std::make_tuple(0, [=](int i) {
+					
+				}));*/
+			}
 		} else if (type == EntityType::InputChannels) {
 
 		} else if (type == EntityType::OutputChannels) {
@@ -171,10 +267,12 @@ struct Entity {
 	MidiBuffer midibuffer;
 	double orderOfComputation = 0;
 	AudioProcessor* audioProcessor = nullptr;
+	SoundFileProcessor* soundFileProcessor = nullptr;
 	PluginWindow* pluginWindow = nullptr;
 	AudioFormatReader* audioFormatReader = nullptr;
-	std::unordered_map<Connection*, Connection*> audioSources;
-	std::unordered_map<Connection*, Connection*> audioDestinations;
+	//MainContentComponent* mcc;
+	std::unordered_set<Connection*> audioSources;
+	std::unordered_set<Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
 	std::deque<std::tuple<int64, MidiMessage>> midiQueue;
 
@@ -442,6 +540,18 @@ public:
 	}
 
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
+		while (!audioCallbackFunctionQueue.empty() && std::get<0>(*audioCallbackFunctionQueue.begin()) < sampleCount) {
+			auto func = std::get<1>(*audioCallbackFunctionQueue.begin());
+			func(std::get<0>(*audioCallbackFunctionQueue.begin()) - sampleCount);
+			audioCallbackFunctionQueue.erase(*audioCallbackFunctionQueue.begin());
+		}
+
+		while (!audioCallbackFunctionQueue.empty() && std::get<0>(*audioCallbackFunctionQueue.begin()) < sampleCount + bufferToFill.numSamples) {
+			auto func = std::get<1>(*audioCallbackFunctionQueue.begin());
+			func(std::get<0>(*audioCallbackFunctionQueue.begin()) - sampleCount);
+			audioCallbackFunctionQueue.erase(*audioCallbackFunctionQueue.begin());
+		}
+
 		for (auto& midi : midiInputDevices) {
 			midi->midiBuffer.clear();
 			midi->midiMessageCollector.removeNextBlockOfMessages(midi->midiBuffer, bufferToFill.numSamples);
@@ -516,7 +626,7 @@ public:
 						reply["id"] = 1;
 					} else if (message == "load-plugin") {; 
 						double order = getFloatInField(msg, "order"); 
-						int id = nextId();
+						int id = nextEntityId();
 						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), order, mcc->sampleRate };
 						mcc->playlist.push_back(mcc->entities[id]);
 						reply["id"] = id;
@@ -527,9 +637,35 @@ public:
 						delete entity;
 						mcc->entities[msg["id"]] = nullptr;
 					} else if (message == "add-connection") {
-						Connection* conn = new Connection{ getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
-						conn->destination->audioSources[conn] = conn;
-						conn->source->audioDestinations[conn] = conn;
+						int connId = nextConnId();
+						mcc->connections[connId] = new Connection{ connId, getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
+						auto startSample = msg["start-sample"].is_number_integer() ? getIntegerInField(msg, "start-sample") : 0;
+						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(startSample, [=](int sample) {
+							Connection* c = mcc->connections[connId];
+							if (c != nullptr) {
+								if (c->destination != nullptr && c->source != nullptr) {
+									c->destination->audioSources.insert(c);
+									c->source->audioDestinations.insert(c);
+								}
+							}
+						}));
+						if (msg["end-sample"].is_number_integer()) {
+							auto endSample = getIntegerInField(msg, "end-sample");
+							mcc->audioCallbackFunctionQueue.insert(std::make_tuple(endSample, [=](int sample) {
+								Connection* c = mcc->connections[connId];
+								if (c != nullptr) {
+									if (c->destination != nullptr && c->source != nullptr) {
+										c->source->audioDestinations.erase(c);
+										c->destination->audioSources.erase(c);
+										delete c;
+										mcc->connections[connId] = nullptr;
+									}
+								}
+							}));
+						}
+						
+						//conn->destination->audioSources.insert(conn);
+						//conn->source->audioDestinations.insert(conn);
 					} else if (message == "remove-connection") {
 						Entity* source = getValidEntity(msg, "source-id", mcc->entities);
 						int sourceCh = getIntegerInField(msg, "source-ch");
@@ -537,14 +673,25 @@ public:
 						int destCh = getIntegerInField(msg, "dest-ch");
 						Connection* foundConn = nullptr;
 						for (auto conn : source->audioDestinations) {
-							if (conn.first->destination == dest && conn.first->sourceCh == sourceCh && conn.first->destCh == destCh) {
-								foundConn = conn.first;
+							if (conn->destination == dest && conn->sourceCh == sourceCh && conn->destCh == destCh) {
+								foundConn = conn;
 							}
 						}
 						if (foundConn == nullptr) { throw "Did not find connection."s; }
-						source->audioDestinations.erase(foundConn);
-						dest->audioSources.erase(foundConn);
-						delete foundConn;
+
+						auto connId = foundConn->id;
+						auto atSample = msg["at-sample"].is_number_integer() ? getIntegerInField(msg, "at-sample") : 0;
+						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(atSample, [=](int i) {
+							Connection* c = mcc->connections[connId];
+							if (c != nullptr) {
+								if (c->destination != nullptr && c->source != nullptr) {
+									c->source->audioDestinations.erase(c);
+									c->destination->audioSources.erase(c);
+									delete c;
+									mcc->connections[connId] = nullptr;
+								}
+							}
+						}));						
 					} else if (message == "add-midi-connection") {
 						MidiBuffer* midibuffer;
 						if (msg["source-id"].is_number_integer()) {
@@ -601,6 +748,8 @@ public:
 						auto entity = getPlugin(msg, "id", mcc->entities);
 						entity->midiQueue.clear();
 						entity->audioProcessor->reset();
+					} else if (message == "queue-clip") {
+						
 					} else if (message == "plugin-open-editor") {
 						// consider a mechanism for default values for non-mandatory fields
 						int x, y;
@@ -642,8 +791,10 @@ public:
 	TCPServer tcpServer{ this };
 	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
+	std::array<Connection*, CONN_LIMIT> connections;
 	std::vector<Connection*> calculationQueue; // sorted by sample
 	std::vector<Entity*> playlist; // sorted by order
+	std::set<std::tuple<int64, std::function<void(int)>>, AudioCallbackFunctionQueueCompare> audioCallbackFunctionQueue{ audioCallbackFunctionQueueCompare };
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainContentComponent)
 };
