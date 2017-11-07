@@ -22,11 +22,9 @@ A later goal is to have a backend code base which is readable enough (Juce helps
 
 DAWs are for the most part deterministic - the only part where max responsivity is needed is when the user interacts with the system - midi input, for example. This live midi input could be activated in C++ from Clojure, and C++ sends messages back to Clojure with the received midi data, which Clojure might record.
 
-The deterministic part is solved by queues in C++. Clojure sends messages ahead of time, specifying when something should happen, and C++ responds by playing it at the right time, sample-accurately. 
+The deterministic part is solved by queues in C++. Clojure sends messages ahead of time, specifying when something should happen, and C++ responds by playing it at the right time, sample-accurately.
 
-Clojure should keep track of what is created, and take responsibility for freeing resources, and saving all state. Every entity in C++ would have an ID. C++ maintains the queue, where the most important queue is the audio callback queue, where the graph gets constructed every callback (clarify!). C++ doesn't need to know anything about the files and its length, one would utilize Clojure for file info. Time should be specified as seconds on the clojure side and converted to samples on the c++ side (nope, that puts unnecessary logic in c++). Apart from plugin editors, GUI can be drawn in clojure/java, messages from the GUI sent immediately to queue, and state stored within clojure. Even waveforms of files can be drawn, as C++ only knows the file handle anyway.
-
-C++ maintains a queue for each plugin, clip, volume, and pan, in addition to the graph.
+As of now, there exist an incomplete implementation in C++. It is in no way finished, as there still exists conceptual problems with the back-end model. Right now, there is a concept of a sorted calculation order, representing the flow of computation from input to output. There is also a concept of a connection which copies a calculation output to a calculation input, but I think this abstraction might be too high, since this could be part of the sorted calculation order in the first place, thereby simplifying the backend (which I think is crucial - there should be as little logic there as possible)
 
 More to come here...
 
