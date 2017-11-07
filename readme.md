@@ -26,6 +26,12 @@ The deterministic part is solved by queues in C++. Clojure sends messages ahead 
 
 As of now, there exist an incomplete implementation in C++. It is in no way finished, as there still exists conceptual problems with the back-end model. Right now, there is a concept of a sorted calculation order, representing the flow of computation from input to output. There is also a concept of a connection which copies a calculation output to a calculation input, but I think this abstraction might be too high, since this could be part of the sorted calculation order in the first place, thereby simplifying the backend (which I think is crucial - there should be as little logic there as possible)
 
+There might be something to be gained in separating the calculation (plugins etc.) from the buffers (in a callback this is usually a buffer of 64-512 samples). As of now, each "Entity" (which really is a calculation object) owns a buffer, which creates a coupling I don't think is necessary. An implicit connection between plugins is made when a calculation writes to a buffer, which a later calculation then reads. Calculation objects, which often have multiple input/output channels, need not know where they get their data, or where they send it, nor their order of computation in the audio callback loop.
+
+Problem is, a VST plugin (represented in Juce as an AudioProcessor) couples the calculation and the buffer - the input data sent to the plugin is overwritten with the output data. It is perhaps more correct to say that a plugin operates on a (multichannel) input/output buffer - anyway we need explicit control over the data flow.
+
+Ideally, a buffer is a free-standing single-channel object which is "borrowed" by a processor, and it might be up to the front end to specify copying and mixing of buffers. We get less abstraction, less logic, and the ability to do mono to stereo conversions from the front-end, and (I think) a simple way to implement delay loops.
+
 More to come here...
 
 ### A database at the heart
