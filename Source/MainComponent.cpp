@@ -186,8 +186,10 @@ struct Entity {
 	}
 
 	void process(int64 sampleCount, int numSamples) {
-		buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
-		buffer.clear();
+		//buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
+		//buffer.clear();
+
+
 		for (auto& connection : audioSources) {
 			buffer.addFrom(connection->destCh, 0, connection->source->buffer.getReadPointer(connection->sourceCh), numSamples);
 		}
@@ -245,6 +247,7 @@ struct Entity {
 	std::unordered_set<Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
 	std::deque<std::tuple<int64, MidiMessage>> midiQueue;
+	std::vector<double*> buffersToReferTo;
 
 	EntityType type;
 };
@@ -326,8 +329,22 @@ typedef bool(*AudioCallbackFunctionQueueCompare)(std::tuple<int64, std::function
 class MainContentComponent : public Component, public AudioSource {
 public:
 	MainContentComponent() {
-		setSize(100, 200);
+		setSize(200, 100);
 		setTopLeftPosition(0, 700);
+
+		
+
+		AudioBuffer<double> buf1;
+		AudioBuffer<double> buf2;
+		AudioBuffer<double> buf3;
+		AudioBuffer<double> buf4;
+		//double* bufs[2] = { buf1.getWritePointer(0), buf2.getWritePointer(0) };
+		std::vector<double*> bufs;
+		bufs.push_back(buf1.getWritePointer(0));
+		bufs.push_back(buf2.getWritePointer(0));
+
+		AudioBuffer<double> aggregateBuffer;
+		aggregateBuffer.setDataToReferTo(bufs.data(), 2, 256);
 
 		messageManager = MessageManager::getInstance();
 		
@@ -375,6 +392,7 @@ public:
 
 	void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
 		this->sampleRate = sampleRate;
+		this->samplesPerBlockExpected = samplesPerBlockExpected;
 
 		auto device = deviceManager.getCurrentAudioDevice();
 		std::cout << "Device name: " << device->getName() << "\n";
@@ -390,6 +408,10 @@ public:
 
 		if (initialized) {
 			return;
+		}
+
+		for (auto& buffer : realtimebuffers) {
+			buffer.setSize(1, samplesPerBlockExpected, false, false, false);
 		}
 
 		entities.fill(nullptr);
@@ -419,6 +441,7 @@ public:
 	}
 
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
+		jassert(bufferToFill.numSamples == samplesPerBlockExpected);
 		// query the audio callback function queue - these functions set up the connections and directs what calculations to perform
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(*audioCallbackFunctionQueue.begin()) < sampleCount) {
 			auto func = std::get<1>(*audioCallbackFunctionQueue.begin());
@@ -630,12 +653,27 @@ public:
 						reply["id"] = 0;
 					} else if (message == "get-output-channels") {
 						reply["id"] = 1;
-					} else if (message == "load-plugin") {; 
-						double order = getFloatInField(msg, "order"); 
+					} else if (message == "load-plugin") {
+						double order = getFloatInField(msg, "order");
 						int id = nextEntityId();
 						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), order, mcc->sampleRate };
 						mcc->playlist.insert(mcc->entities[id]);
 						reply["id"] = id;
+					} else if (message == "calculate") {
+						auto entity = getValidEntity(msg, "id", mcc->entities);
+						auto order = getFloatInField(msg, "order");
+						auto startSample = msg["start-sample"].is_null() ? 0 : getIntegerInField(msg, "start-sample");
+						std::vector<double*> buffersToUse;
+						for (int i = 0; i < msg["buffers-to-use"].size(); i++) {
+							int bufId = msg["buffers-to-use"][i];
+							buffersToUse.push_back(mcc->realtimebuffers[bufId].getWritePointer(0));
+						}
+						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(startSample, [=](int sample) mutable {
+							entity->orderOfComputation = order;
+							entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+							mcc->playlist.insert(entity);
+						}));
+						//auto endSample = msg["end-sample"].is_null() ? 0 : getIntegerInField(msg, "end-sample");
 					} else if (message == "remove-plugin") {
 						auto entity = getPlugin(msg, "id", mcc->entities);
 						// https://en.wikipedia.org/wiki/Erase%E2%80%93remove_idiom
@@ -826,11 +864,14 @@ public:
 	bool initialized = false;
 	int64 sampleCount = 0;
 	double sampleRate;
+	int samplesPerBlockExpected;
 	TCPServer tcpServer{ this };
 	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
 	std::array<Connection*, CONN_LIMIT> connections;
 	std::array<AudioFormatReader*, FILE_LIMIT> audioFormatReaders;
+	std::array<AudioBuffer<double>, 1000> realtimebuffers;
+	
 
 	std::set<Entity*, std::function<bool(Entity*, Entity*)>> playlist{
 		[](Entity* a, Entity* b) { return a->orderOfComputation < b->orderOfComputation; }
@@ -845,9 +886,3 @@ private:
 };
 
 Component* createMainContentComponent() { return new MainContentComponent(); }
-
-struct PlaylistCompare {
-	bool operator()(Entity* a, Entity* b) {
-		return a->orderOfComputation < b->orderOfComputation;
-	}
-};
