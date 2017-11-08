@@ -19,6 +19,7 @@ using namespace std::string_literals;
 constexpr int ENTITY_LIMIT = 10000;
 constexpr int CONN_LIMIT = 100000;
 constexpr int FILE_LIMIT = 100000;
+constexpr int REALTIMEBUFFER_LIMIT = 1000;
 
 int entityId = 1;
 
@@ -57,6 +58,28 @@ public:
 
 private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginWindow)
+};
+
+enum BufferProcessorMode { CLEAR, ADD, COPY };
+
+struct BufferProcessor {
+	BufferProcessor(AudioBuffer<double>* bufferToClear) : buffer1{ bufferToClear }, mode{ BufferProcessorMode::CLEAR } {}
+
+	BufferProcessor(AudioBuffer<double>* fromBuffer, AudioBuffer<double>* toBuffer, BufferProcessorMode mode) : buffer1{ fromBuffer }, buffer2{ toBuffer }, mode{ mode } {}
+
+	void process() {
+		if (mode == BufferProcessorMode::CLEAR) {
+			buffer1->clear();
+		} else if (mode == BufferProcessorMode::COPY) {
+			buffer2->copyFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
+		} else if (mode == BufferProcessorMode::ADD) {
+			buffer2->addFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
+		}
+	}
+
+	AudioBuffer<double>* buffer1;
+	AudioBuffer<double>* buffer2;
+	BufferProcessorMode mode;
 };
 
 struct SoundFileProcessor  {
@@ -104,7 +127,7 @@ struct MidiInputDevice {
 
 
 enum EntityType {
-	AudioProcessorType, AudioFormatReaderType, InputChannels, OutputChannels, MidiInputType, SoundFileProcessorType
+	AudioProcessorType, BufferProcessorType, InputChannels, OutputChannels, MidiInputType, SoundFileProcessorType
 };
 
 struct Entity;
@@ -122,7 +145,7 @@ struct Connection {
 
 struct Entity {
 	Entity(long id, EntityType type) : id{ id }, type{ type } {}
-	Entity(long id, AudioProcessor* processor, double order, double sampleRate) : id{ id }, audioProcessor{ processor }, orderOfComputation{ order } {
+	Entity(long id, AudioProcessor* processor, double sampleRate) : id{ id }, audioProcessor{ processor } {
 		type = EntityType::AudioProcessorType;
 		auto inputBuses = audioProcessor->getBusesLayout().inputBuses;
 		auto outputBuses = audioProcessor->getBusesLayout().outputBuses;
@@ -139,11 +162,11 @@ struct Entity {
 	Entity(long id, SoundFileProcessor* soundFileProcessor) : id{ id }, soundFileProcessor{ soundFileProcessor } {
 		orderOfComputation = DBL_MIN;
 	}
+
+	Entity(long id, BufferProcessor* bufferProcessor, double order) :id{ id }, bufferProcessor{ bufferProcessor }, orderOfComputation{ order } {}
 	
 	~Entity() {
-		if (type == EntityType::AudioFormatReaderType) {
-			delete audioFormatReader;
-		} else if (type == EntityType::AudioProcessorType) {
+		if (type == EntityType::AudioProcessorType) {
 			for (auto conn : audioSources) {
 				conn->source->audioDestinations.erase(conn);
 				// here we must delete conn from connections, but we haven't access. Restructure is imminent
@@ -188,28 +211,27 @@ struct Entity {
 	void process(int64 sampleCount, int numSamples) {
 		//buffer.setSize(std::max(numInputChannels, numOutputChannels), numSamples, false, false, true);
 		//buffer.clear();
-
-
-		for (auto& connection : audioSources) {
-			buffer.addFrom(connection->destCh, 0, connection->source->buffer.getReadPointer(connection->sourceCh), numSamples);
-		}
-
-		midibuffer.clear();
-		for (auto src : midiSources) {
-			midibuffer.addEvents(*src, 0, numSamples, 0);
-		}
-
-		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount) {
-			midiQueue.pop_front();
-		}
-
-		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount + numSamples) {
-			midibuffer.addEvent(std::get<1>(midiQueue.front()), std::get<0>(midiQueue.front()) - sampleCount);
-			midiQueue.pop_front();
-		}
 		
 		if (type == EntityType::AudioProcessorType) {
-			ScopedLock lock(audioProcessor->getCallbackLock());
+			for (auto& connection : audioSources) {
+				buffer.addFrom(connection->destCh, 0, connection->source->buffer.getReadPointer(connection->sourceCh), numSamples);
+			}
+
+			midibuffer.clear();
+			for (auto src : midiSources) {
+				midibuffer.addEvents(*src, 0, numSamples, 0);
+			}
+
+			while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount) {
+				midiQueue.pop_front();
+			}
+
+			while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount + numSamples) {
+				midibuffer.addEvent(std::get<1>(midiQueue.front()), std::get<0>(midiQueue.front()) - sampleCount);
+				midiQueue.pop_front();
+			}
+
+			//ScopedLock lock(audioProcessor->getCallbackLock());
 
 			if (audioProcessor->supportsDoublePrecisionProcessing()) {
 				audioProcessor->processBlock(buffer, midibuffer);
@@ -224,30 +246,31 @@ struct Entity {
 			if (soundFileProcessor->done) {
 				removeFromPlaylist = true;
 			}
-		} else if (type == EntityType::InputChannels) {
-
-		} else if (type == EntityType::OutputChannels) {
-
+		} else if (type == BufferProcessorType) {
+			bufferProcessor->process();
 		}
 	}
 	
 	long id;
+	double orderOfComputation = 0;
 	bool removeFromPlaylist = false;
+	//std::vector<double*> buffersToReferTo;
+	
+	AudioProcessor* audioProcessor = nullptr;
+	SoundFileProcessor* soundFileProcessor = nullptr;
+	BufferProcessor* bufferProcessor = nullptr;
+	
 	int numInputChannels = 0;
 	int numOutputChannels = 0;
 	AudioBuffer<double> buffer;
 	MidiBuffer midibuffer;
-	double orderOfComputation = 0;
-	AudioProcessor* audioProcessor = nullptr;
-	SoundFileProcessor* soundFileProcessor = nullptr;
 	PluginWindow* pluginWindow = nullptr;
-	AudioFormatReader* audioFormatReader = nullptr;
+	//AudioFormatReader* audioFormatReader = nullptr;
 	//MainContentComponent* mcc;
 	std::unordered_set<Connection*> audioSources;
 	std::unordered_set<Connection*> audioDestinations;
 	std::vector<MidiBuffer*> midiSources;
 	std::deque<std::tuple<int64, MidiMessage>> midiQueue;
-	std::vector<double*> buffersToReferTo;
 
 	EntityType type;
 };
@@ -334,21 +357,23 @@ public:
 
 		
 
-		AudioBuffer<double> buf1;
-		AudioBuffer<double> buf2;
-		AudioBuffer<double> buf3;
-		AudioBuffer<double> buf4;
+		//AudioBuffer<double> buf1;
+		//AudioBuffer<double> buf2;
+		//AudioBuffer<double> buf3;
+		//AudioBuffer<double> buf4;
 		//double* bufs[2] = { buf1.getWritePointer(0), buf2.getWritePointer(0) };
-		std::vector<double*> bufs;
-		bufs.push_back(buf1.getWritePointer(0));
-		bufs.push_back(buf2.getWritePointer(0));
+		//std::vector<double*> bufs;
+		//bufs.push_back(buf1.getWritePointer(0));
+		//bufs.push_back(buf2.getWritePointer(0));
 
-		AudioBuffer<double> aggregateBuffer;
-		aggregateBuffer.setDataToReferTo(bufs.data(), 2, 256);
+		//AudioBuffer<double> aggregateBuffer;
+		//aggregateBuffer.setDataToReferTo(bufs.data(), 2, 256);
 
 		messageManager = MessageManager::getInstance();
+
+		deviceManager.initialise(64, 64, nullptr, true);
 		
-		if (getMachine() == "deskto") {
+		if (getMachine() == "desktop") {
 			AudioDeviceManager::AudioDeviceSetup ads;
 			deviceManager.getAudioDeviceSetup(ads);
 			ads.inputDeviceName = "ASIO Fireface USB";
@@ -357,6 +382,7 @@ public:
 			ads.bufferSize = 256;
 			ads.useDefaultInputChannels = true;
 			ads.useDefaultOutputChannels = true;
+			
 
 			deviceManager.closeAudioDevice();
 			deviceManager.setCurrentAudioDeviceType("ASIO", true);
@@ -388,6 +414,9 @@ public:
 			}
 		}
 		deviceManager.closeAudioDevice();
+		tcpServer.signalThreadShouldExit();
+		tcpServer.serverSocket.close();
+		tcpServer.stopThread(50);
 	}
 
 	void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
@@ -424,12 +453,25 @@ public:
 		entities[0]->numInputChannels = 0;
 		entities[0]->numOutputChannels = device->getActiveInputChannels().countNumberOfSetBits();
 		entities[0]->orderOfComputation = DBL_MIN;
+		
+		
+		std::vector<double*> inBufs;
+		for (int i = 0; i < device->getActiveInputChannels().countNumberOfSetBits(); i++) {
+			inBufs.push_back(realtimebuffers[i].getWritePointer(0));
+		}
+		entities[0]->buffer.setDataToReferTo(inBufs.data(), inBufs.size(), samplesPerBlockExpected);
+
 		entities[1] = new Entity{ 1, EntityType::OutputChannels };
-		entities[1]->numInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
+		entities[1]->numInputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
 		entities[1]->numOutputChannels = 0;
 		entities[1]->orderOfComputation = DBL_MAX;
 
-		playlist.insert(entities[1]);
+		std::vector<double*> outBufs;
+		for (int i = 0; i < device->getActiveOutputChannels().countNumberOfSetBits(); i++) {
+			realtimebuffers[i + inBufs.size()].clear();
+			outBufs.push_back(realtimebuffers[i + inBufs.size()].getWritePointer(0));
+		}
+		entities[1]->buffer.setDataToReferTo(outBufs.data(), outBufs.size(), samplesPerBlockExpected);
 
 		auto midiDeviceNames = MidiInput::getDevices();
 		for (int i = 0; i < midiDeviceNames.size(); i++) {
@@ -461,7 +503,7 @@ public:
 			midi->midiMessageCollector.removeNextBlockOfMessages(midi->midiBuffer, bufferToFill.numSamples);
 		}
 
-		// entites[0] represents audio interface input. Fill those buffers!
+		// entities[0] represents audio interface input. Fill those buffers!
 		entities[0]->buffer.setSize(entities[0]->numOutputChannels, bufferToFill.numSamples, false, false, true);
 		entities[0]->buffer.clear();
 		for (int i = 0; i < entities[0]->numOutputChannels; i++) {
@@ -477,9 +519,6 @@ public:
 			if (entity->removeFromPlaylist) {
 				audioCallbackFunctionQueue.insert(std::make_tuple(0, [=](int i) {
 					playlist.erase(entity);
-					auto entId = entity->id;
-					delete entity;
-					entities[entId] = nullptr;
 				}));
 			}
 		}
@@ -565,6 +604,13 @@ public:
 			}
 		}
 
+		int getValidRealtimeBufferId(nlohmann::json& msg, const std::string& field) {
+			int id = getIntegerInField(msg, field);
+			if (id < 0 && id >= REALTIMEBUFFER_LIMIT) {
+				throw "" + field + " is not within realtime buffer limits.";
+			}
+		}
+
 		AudioFormatReader* getValidAudioFormatReader(nlohmann::json& msg, const std::string& field, std::array<AudioFormatReader*, FILE_LIMIT>& audioFormatReaders) {
 			AudioFormatReader* afr = audioFormatReaders[getValidAudioFormatReaderId(msg, field)];
 			if (afr == nullptr) {
@@ -629,8 +675,13 @@ public:
 		void run() override {
 			serverSocket.createListener(8989, "127.0.0.1");
 			char* buf = new char[1024 * 1024];
-			while (true) {
+			while (!threadShouldExit()) {
 				auto connSocket = serverSocket.waitForNextConnection();
+
+				if (connSocket == nullptr) {
+					continue;
+				}
+				
 				int i;
 				connSocket->read(&i, 4, true);
 				connSocket->read(buf, i, true);
@@ -654,11 +705,39 @@ public:
 					} else if (message == "get-output-channels") {
 						reply["id"] = 1;
 					} else if (message == "load-plugin") {
-						double order = getFloatInField(msg, "order");
+						//double order = getFloatInField(msg, "order");
 						int id = nextEntityId();
-						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), order, mcc->sampleRate };
-						mcc->playlist.insert(mcc->entities[id]);
+						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), mcc->sampleRate };
 						reply["id"] = id;
+					} else if (message == "load-buffer-processor") {
+						auto order = getFloatInField(msg, "order");
+						auto type = getStringInField(msg, "type");
+
+						if (!msg["clear"].is_null()) {
+							auto bufferId = getValidRealtimeBufferId(msg, "clear");
+							int id = nextEntityId();
+							mcc->entities[id] = new Entity{ id, new BufferProcessor(&mcc->realtimebuffers[bufferId]), order };
+							reply["id"] = id;
+						} else if (type == "add") {
+							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+							auto bufferId2 = getValidRealtimeBufferId(msg, "add-to");
+							int id = nextEntityId();
+							mcc->entities[id] = new Entity{ id, new BufferProcessor(&mcc->realtimebuffers[bufferId1], &mcc->realtimebuffers[bufferId2], BufferProcessorMode::ADD), order };
+							reply["id"] = id;
+						} else if (type == "copy") {
+							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+							auto bufferId2 = getValidRealtimeBufferId(msg, "copy-to");
+							int id = nextEntityId();
+							mcc->entities[id] = new Entity{ id, new BufferProcessor(&mcc->realtimebuffers[bufferId1], &mcc->realtimebuffers[bufferId2], BufferProcessorMode::COPY), order };
+							reply["id"] = id;
+						} else {
+							throw "type must be either clear, add or copy."s;
+						}
+					} else if (message == "remove-entity") {
+						auto entity = getValidEntity(msg, "id", mcc->entities);
+						mcc->playlist.erase(mcc->playlist.find(entity));
+						delete entity;
+						mcc->entities[msg["id"]] = nullptr;
 					} else if (message == "calculate") {
 						auto entity = getValidEntity(msg, "id", mcc->entities);
 						auto order = getFloatInField(msg, "order");
@@ -673,14 +752,27 @@ public:
 							entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
 							mcc->playlist.insert(entity);
 						}));
-						//auto endSample = msg["end-sample"].is_null() ? 0 : getIntegerInField(msg, "end-sample");
-					} else if (message == "remove-plugin") {
-						auto entity = getPlugin(msg, "id", mcc->entities);
-						// https://en.wikipedia.org/wiki/Erase%E2%80%93remove_idiom
-						mcc->playlist.erase(mcc->playlist.find(entity));
-						delete entity;
-						mcc->entities[msg["id"]] = nullptr;
-					} else if (message == "add-connection") {
+						if (msg["end-sample"].is_number_integer()) {
+							mcc->audioCallbackFunctionQueue.insert(std::make_tuple(getIntegerInField(msg, "end-sample"), [=](int sample) {
+								mcc->playlist.erase(mcc->playlist.find(entity));
+							}));
+						}
+					} else if (message == "remove-calculation") {
+						auto id = getIntegerInField(msg, "id");
+						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
+						Entity* e = nullptr;
+						for (auto entity : mcc->playlist) {
+							if (entity->id == id) {
+								mcc->audioCallbackFunctionQueue.insert(std::make_tuple(atSample, [=](int sample) {
+									mcc->playlist.erase(entity);
+								}));
+								break;
+							}
+						}
+						if (e == nullptr) {
+							msg["reply"] = "The entity is not running."s;
+						}
+					/*} else if (message == "add-connection") {
 						int connId = nextConnId();
 						mcc->connections[connId] = new Connection{ connId, getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
 						auto startSample = msg["start-sample"].is_number_integer() ? getIntegerInField(msg, "start-sample") : 0;
@@ -706,11 +798,11 @@ public:
 									}
 								}
 							}));
-						}
+						}*/
 						
 						//conn->destination->audioSources.insert(conn);
 						//conn->source->audioDestinations.insert(conn);
-					} else if (message == "remove-connection") {
+					/*} else if (message == "remove-connection") {
 						Entity* source = getValidEntity(msg, "source-id", mcc->entities);
 						int sourceCh = getIntegerInField(msg, "source-ch");
 						Entity* dest = getValidEntity(msg, "dest-id", mcc->entities);
@@ -735,7 +827,7 @@ public:
 									mcc->connections[connId] = nullptr;
 								}
 							}
-						}));			
+						}));	*/		
 					} else if (message == "add-midi-connection") {
 						MidiBuffer* midibuffer;
 						if (msg["source-id"].is_number_integer()) {
@@ -841,6 +933,8 @@ public:
 						entity->deleteEditorWindow();
 					} else if (message == "get-sample-time") {
 						reply["sample"] = mcc->sampleCount;
+					} else {
+						throw "message not understood."s;
 					}
 					
 				} catch (std::string error) {
@@ -870,7 +964,7 @@ public:
 	std::array<Entity*, ENTITY_LIMIT> entities;
 	std::array<Connection*, CONN_LIMIT> connections;
 	std::array<AudioFormatReader*, FILE_LIMIT> audioFormatReaders;
-	std::array<AudioBuffer<double>, 1000> realtimebuffers;
+	std::array<AudioBuffer<double>, REALTIMEBUFFER_LIMIT> realtimebuffers;
 	
 
 	std::set<Entity*, std::function<bool(Entity*, Entity*)>> playlist{
