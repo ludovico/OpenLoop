@@ -83,11 +83,18 @@ struct BufferProcessor {
 };
 
 struct SoundFileProcessor  {
-	SoundFileProcessor(int sampleInCallback, AudioFormatReader* afr, int64 startSample, int64 length) : sampleInDestBuffer{ sampleInCallback }, afr{ afr }, startSample{ startSample } {
+	SoundFileProcessor(AudioFormatReader* afr, int64 startSample, int64 length) : afr{ afr }, startSample{ startSample } {
 		positionInFile = startSample;
 		endSample = startSample + length;
 		if (endSample > afr->lengthInSamples) {
 			endSample = afr->lengthInSamples;
+		}
+	}
+
+	void init(int sampleInDestBuffer) { // this is a hack
+		if (firstBlock) {
+			this->sampleInDestBuffer = sampleInDestBuffer;
+			firstBlock = false;
 		}
 	}
 
@@ -105,10 +112,11 @@ struct SoundFileProcessor  {
 		}
 	}
 
+	bool firstBlock = true;
 	bool done = false;
+	int sampleInDestBuffer = 0;
 	AudioBuffer<float> floatbuffer;
 	AudioFormatReader* afr;
-	int sampleInDestBuffer;
 	int64 startSample;
 	int64 endSample;
 	int64 positionInFile;
@@ -159,11 +167,11 @@ struct Entity {
 		audioProcessor->prepareToPlay(sampleRate, 441);
 	}
 	
-	Entity(long id, SoundFileProcessor* soundFileProcessor) : id{ id }, soundFileProcessor{ soundFileProcessor } {
+	Entity(long id, SoundFileProcessor* soundFileProcessor) : id{ id }, soundFileProcessor{ soundFileProcessor }, type{ EntityType::SoundFileProcessorType } {
 		orderOfComputation = DBL_MIN;
 	}
 
-	Entity(long id, BufferProcessor* bufferProcessor, double order) :id{ id }, bufferProcessor{ bufferProcessor }, orderOfComputation{ order } {}
+	Entity(long id, BufferProcessor* bufferProcessor, double order) :id{ id }, bufferProcessor{ bufferProcessor }, orderOfComputation{ order }, type{ EntityType::BufferProcessorType } {}
 	
 	~Entity() {
 		if (type == EntityType::AudioProcessorType) {
@@ -242,6 +250,7 @@ struct Entity {
 				buffer.makeCopyOf(floatbuffer);
 			}
 		} else if (type == EntityType::SoundFileProcessorType) {
+			soundFileProcessor->init(sampleInDestBuffer); // ... and this is a hack. We might need to have a concept of the first block produced in a calculation.
 			soundFileProcessor->processBlock(buffer, midibuffer);
 			if (soundFileProcessor->done) {
 				removeFromPlaylist = true;
@@ -253,6 +262,7 @@ struct Entity {
 	
 	long id;
 	double orderOfComputation = 0;
+	int sampleInDestBuffer = 0;
 	bool removeFromPlaylist = false;
 	//std::vector<double*> buffersToReferTo;
 	
@@ -355,8 +365,6 @@ public:
 		setSize(200, 100);
 		setTopLeftPosition(0, 700);
 
-		
-
 		//AudioBuffer<double> buf1;
 		//AudioBuffer<double> buf2;
 		//AudioBuffer<double> buf3;
@@ -393,6 +401,7 @@ public:
 			deviceManager.addAudioCallback(&audioSourcePlayer);
 			audioSourcePlayer.setSource(this);
 		} else {
+			deviceManager.closeAudioDevice();
 			String audioError = deviceManager.initialise(2, 2, nullptr, true);
 			jassert(audioError.isEmpty());
 
@@ -704,11 +713,46 @@ public:
 						reply["id"] = 0;
 					} else if (message == "get-output-channels") {
 						reply["id"] = 1;
+					} else if (message == "load-audio-file") {
+						// Switch to an AudioFormatManager for easy access to aiff, mp3, wma, flac and ogg.
+						WavAudioFormat waf;
+						AudioFormatReader* afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
+						if (afr == nullptr) {
+							throw "The file is not a wav file"s;
+						}
+						auto id = nextAudioFormatReaderId();
+						mcc->audioFormatReaders[id] = afr;
+						reply["id"] = id;
 					} else if (message == "load-plugin") {
 						//double order = getFloatInField(msg, "order");
 						int id = nextEntityId();
 						mcc->entities[id] = new Entity{ id, createNewPlugin(msg, "path"), mcc->sampleRate };
 						reply["id"] = id;
+					} else if (message == "load-clip") {
+						//auto entity = getValidEntity(msg, "dest-id", mcc->entities);
+						auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
+						//auto destCh1 = msg.is_null() ? 0 : getIntegerInField(msg, "dest-ch-1");
+						//auto destCh2 = msg.is_null() ? 0 : getIntegerInField(msg, "dest-ch-2");
+
+						//int connId1 = nextConnId();
+						//mcc->connections[connId] = new Connection{ connId, getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
+
+						auto atSample = getIntegerInField(msg, "at-sample");
+						
+						SoundFileProcessor* sfp = new SoundFileProcessor(afr, getIntegerInField(msg, "from-sample"), getIntegerInField(msg, "length"));
+						int id = nextEntityId();
+						mcc->entities[id] = new Entity{ id, sfp };
+						reply["id"] = id;
+						/*mcc->audioCallbackFunctionQueue.insert(std::make_tuple(atSample, [=](int i) {
+							mcc->playlist.insert(mcc->entities[id]);
+							Connection* c = mcc->connections[connId];
+							if (c != nullptr) {
+								if (c->destination != nullptr && c->source != nullptr) {
+									c->destination->audioSources.insert(c);
+									c->source->audioDestinations.insert(c);
+								}
+							}
+						}));*/
 					} else if (message == "load-buffer-processor") {
 						auto order = getFloatInField(msg, "order");
 						auto type = getStringInField(msg, "type");
@@ -750,6 +794,7 @@ public:
 						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(startSample, [=](int sample) mutable {
 							entity->orderOfComputation = order;
 							entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+							entity->sampleInDestBuffer = startSample - mcc->sampleCount;
 							mcc->playlist.insert(entity);
 						}));
 						if (msg["end-sample"].is_number_integer()) {
@@ -884,40 +929,6 @@ public:
 						auto entity = getPlugin(msg, "id", mcc->entities);
 						entity->midiQueue.clear();
 						entity->audioProcessor->reset();
-					} else if (message == "load-audio-file") {
-						// Switch to an AudioFormatManager for easy access to aiff, mp3, wma, flac and ogg.
-						WavAudioFormat waf;
-						AudioFormatReader* afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
-						if (afr == nullptr) {
-							throw "The file is not a wav file"s;
-						}
-						auto id = nextAudioFormatReaderId();
-						mcc->audioFormatReaders[id] = afr;
-						reply["id"] = id;
-					} else if (message == "queue-clip") {
-						auto entity = getValidEntity(msg, "dest-id", mcc->entities);
-						auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
-						auto destCh1 = msg.is_null() ? 0 : getIntegerInField(msg, "dest-ch-1");
-						auto destCh2 = msg.is_null() ? 0 : getIntegerInField(msg, "dest-ch-2");
-
-						int connId1 = nextConnId();
-						mcc->connections[connId] = new Connection{ connId, getValidEntity(msg, "source-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "source-ch")), getValidEntity(msg, "dest-id", mcc->entities), static_cast<int>(getIntegerInField(msg, "dest-ch")) };
-
-
-						
-						SoundFileProcessor* sfp = new SoundFileProcessor(0, afr, getIntegerInField(msg, "from-sample"), getIntegerInField(msg, "length"));
-						int id = nextEntityId();
-						mcc->entities[id] = new Entity{ id, sfp };
-						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(getIntegerInField(msg, "at-sample"), [=](int i) {
-							mcc->playlist.insert(mcc->entities[id]);
-							Connection* c = mcc->connections[connId];
-							if (c != nullptr) {
-								if (c->destination != nullptr && c->source != nullptr) {
-									c->destination->audioSources.insert(c);
-									c->source->audioDestinations.insert(c);
-								}
-							}
-						}));
 					} else if (message == "plugin-open-editor") {
 						// consider a mechanism for default values for non-mandatory fields
 						int x, y;
@@ -936,7 +947,6 @@ public:
 					} else {
 						throw "message not understood."s;
 					}
-					
 				} catch (std::string error) {
 					reply["error"] = error;
 				}
