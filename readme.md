@@ -1,3 +1,13 @@
+### "Setup"
+
+Go to www.juce.com, download Projucer for your platform of choice - I'm using Windows and Visual Studio 2017. If you open OpenLoop.jucer you can select your own toolset combo.
+
+I do nothing fancy in the code so it should be cross-platform, but this is untested. I use my own audio setup for low latency but the running program should default to your system soundcard, so compile it and run it.
+
+On the front-end side I use Clojure - see resources/clojure/workbench3.clj for a small script. I use the emacs/cider/leiningen toolchain (https://github.com/clojure-emacs/cider) but there are other alternatives.
+
+The functionality of the system as a whole is limited to opening plugins, sending real-time midi and queueing midi. A PluginDescription file must be made for the plugins you want to use - this is a one time operation, and loading the saved PluginDescription xml loads the plugin.
+
 ### The OpenLoop project
 
 The OpenLoop is an experimental project, where the Juce Framework is exposed through ~~Lua~~ ~~Chaiscript~~ ~~bindings~~ messages. 
