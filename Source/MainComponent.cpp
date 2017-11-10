@@ -20,7 +20,7 @@ constexpr int ENTITY_LIMIT = 10000;
 constexpr int FILE_LIMIT = 100000;
 constexpr int REALTIMEBUFFER_LIMIT = 1000;
 
-int entityId = 1;
+int entityId = -1;
 
 int nextEntityId() {
 	entityId += 1;
@@ -77,9 +77,17 @@ struct Entity {
 };
 
 struct Plugin : public Entity {
-	Plugin(long id, AudioProcessor* processor, double sampleRate) : 
+	Plugin(long id, AudioProcessor* processor, double sampleRate, std::vector<int> inputs, std::vector<int> outputs) : 
 		audioProcessor{ processor }, Entity{ id, EntityType::Plugin } {
-
+		for (int i = 0; i < inputs.size(); i++) {
+			auto success = audioProcessor->setChannelLayoutOfBus(true, i, AudioChannelSet::discreteChannels(inputs[i]));
+			if (!success) { throw ""s + "Plugin does not support " + String{ inputs[i] }.toStdString() + " channels for input bus " + String{ i }.toStdString() + "."; }
+		}
+		for (int i = 0; i < outputs.size(); i++) {
+			auto success = audioProcessor->setChannelLayoutOfBus(false, i, AudioChannelSet::discreteChannels(outputs[i]));
+			if (!success) { throw ""s + "Plugin does not support " + String{ outputs[i] }.toStdString() + " channels for output bus " + String{ i }.toStdString() + "."; }
+		}
+		//audioProcessor->setChannelLayoutOfBus(false, 0, AudioChannelSet::discreteChannels(2));
 		audioProcessor->prepareToPlay(sampleRate, 441);
 	}
 
@@ -347,8 +355,6 @@ void saveDesktopPlugins() {
 	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/RC 48.dll");
 	savePluginXml("C:/Program Files/Native Instruments/VSTPlugins 64 bit/Guitar Rig 5.dll");
 }
-
-typedef bool(*AudioCallbackFunctionQueueCompare)(std::tuple<int64, std::function<void(int)>>, std::tuple<int64, std::function<void(int)>>);
 
 class MainContentComponent : public Component, public AudioSource {
 public:
@@ -670,7 +676,32 @@ public:
 						reply["id"] = id;
 					} else if (message == "load-plugin") {
 						int id = nextEntityId();
-						mcc->entities[id] = new Plugin{ id, createNewPlugin(msg, "path"), mcc->sampleRate };
+						std::vector<int> in;
+						std::vector<int> out;
+						if (msg["inputs"].is_array()) {
+							auto inputs = msg["inputs"];
+							for (auto input : inputs) {
+								if (input.is_number_integer()) {
+									in.push_back(input);
+								} else {
+									throw "Input array must consist of integers."s;
+								}
+							}
+						}
+						if (msg["outputs"].is_array()) {
+							auto outputs = msg["outputs"];
+							for (auto output : outputs) {
+								if (output.is_number_integer()) {
+									out.push_back(output);
+								} else {
+									throw "Output array must consist of integers."s;
+								}
+							}
+						}
+						auto plugin = new Plugin{ id, createNewPlugin(msg, "path"), mcc->sampleRate, in, out };
+
+						
+						mcc->entities[id] = plugin;
 						reply["id"] = id;
 					} else if (message == "load-clip") {
 						auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
@@ -680,9 +711,7 @@ public:
 						mcc->entities[id] = new SoundFileProcessor(id, afr, fromSample, length);
 						reply["id"] = id;
 					} else if (message == "load-buffer-processor") {
-						auto order = getFloatInField(msg, "order");
 						auto type = getStringInField(msg, "type");
-
 						if (!msg["clear"].is_null()) {
 							auto bufferId = getValidRealtimeBufferId(msg, "clear");
 							int id = nextEntityId();
@@ -690,13 +719,13 @@ public:
 							reply["id"] = id;
 						} else if (type == "add") {
 							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							auto bufferId2 = getValidRealtimeBufferId(msg, "add-to");
+							auto bufferId2 = getValidRealtimeBufferId(msg, "to");
 							int id = nextEntityId();
 							mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::ADD };
 							reply["id"] = id;
 						} else if (type == "copy") {
 							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							auto bufferId2 = getValidRealtimeBufferId(msg, "copy-to");
+							auto bufferId2 = getValidRealtimeBufferId(msg, "to");
 							int id = nextEntityId();
 							mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::COPY };
 							reply["id"] = id;
@@ -728,7 +757,12 @@ public:
 						}
 						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(startSample, [=](int sample) mutable {
 							entity->orderOfComputation = order;
-							entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+							// this check is just because BufferProcesser gets its buffer references at construction
+							// this design should be revised.
+							// the other processors refer to the data buffers at THIS point, so buffersToUse should always be > 0.
+							if (buffersToUse.size() > 0) {
+								entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+							}
 							mcc->playlist.insert(entity);
 							if (entity->type == EntityType::SoundFileProcessor) {
 								SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
@@ -892,7 +926,6 @@ public:
 	//std::array<Connection*, CONN_LIMIT> connections;
 	std::array<AudioFormatReader*, FILE_LIMIT> audioFormatReaders;
 	std::array<AudioBuffer<double>, REALTIMEBUFFER_LIMIT> realtimebuffers;
-	
 
 	std::set<Entity*, std::function<bool(Entity*, Entity*)>> playlist{
 		[](Entity* a, Entity* b) { return a->orderOfComputation < b->orderOfComputation; }

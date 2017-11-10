@@ -51,13 +51,33 @@
 (defn now [] (:estimated-sample-time (test-synchronize-time)))
 
 (defn createAce []
-  #_(connect {:msg "load-plugin" :order 0.0 :path "c:/code/c++/juce/openloop/resources/desktop/plugins/ACE.xml"})
-  (connect {:msg "load-plugin" :order 0.0 :path "c:/code/c++/juce/openloop/resources/laptop/plugins/FM8.xml"})
-  #_(connect {:msg "add-connection" :source-id 2 :dest-id 1 :source-ch 0 :dest-ch 0})
-  #_(connect {:msg "add-connection" :source-id 2 :dest-id 1 :source-ch 0 :dest-ch 1})
-  (connect {:msg "plugin-open-editor" :id 2})
-  (connect {:msg "calculate" :id 2 :order 1.0 :buffers-to-use [2 3]})
-  (connect {:msg "add-midi-connection" :source-id "m03" :dest-id 2}))
+  (connect {:msg "load-plugin" :path "c:/code/c++/juce/openloop/resources/desktop/plugins/ACE.xml" :outputs [2]})
+  #_(connect {:msg "load-plugin" :path "c:/code/c++/juce/openloop/resources/desktop/plugins/FM8.xml"})
+  (connect {:msg "load-plugin" :path "c:/code/c++/juce/openloop/resources/desktop/plugins/Protoverb.xml" :outputs [2]})
+  (connect {:msg "load-buffer-processor" :type "copy" :from 10 :to 12})
+  (connect {:msg "load-buffer-processor" :type "copy" :from 11 :to 13})
+  (connect {:msg "load-buffer-processor" :type "copy" :from 12 :to 2})
+  (connect {:msg "load-buffer-processor" :type "copy" :from 13 :to 3})
+  (connect {:msg "plugin-open-editor" :id 0})
+  (connect {:msg "plugin-open-editor" :id 1})
+  (connect {:msg "calculate" :id 0 :order 0.0 :buffers-to-use [10 11] :start-sample (+ (now) 44100)})
+  (connect {:msg "calculate" :id 2 :order 0.5 :buffers-to-use [] :start-sample (+ (now) 44100)})
+  (connect {:msg "calculate" :id 3 :order 0.6 :buffers-to-use [] :start-sample (+ (now) 44100)})
+  (connect {:msg "calculate" :id 1 :order 1.0 :buffers-to-use [12 13] :start-sample (+ (now) 44100)})
+  (connect {:msg "calculate" :id 4 :order 1.5 :buffers-to-use [] :start-sample (+ (now) 44100)})
+  (connect {:msg "calculate" :id 5 :order 1.6 :buffers-to-use [] :start-sample (+ (now) 44100)})
+  (connect {:msg "add-midi-connection" :source-id "m03" :dest-id 0 :start-sample (+ (now) 44100)}))
+
+(defn loadFile []
+  #_(connect {:msg "load-audio-file" :path "C:/samples/musicradar/90s-ambient-samples/90s Ambient_3/SoundScapes/Scape01(C).wav"})
+  (connect {:msg "load-audio-file" :path "E:/Samples/Battery 4 Factory Library/Samples/One Shots/Ambience/Ambience Einoma 2.wav"})
+  #_(connect {:msg "load-clip" :file-id 0 :from-sample 0 :length 150000})
+  )
+
+(defn playClip []
+  (connect {:msg "load-audio-file" :path "E:/Samples/Battery 4 Factory Library/Samples/One Shots/Ambience/Ambience Einoma 2.wav"})
+  (connect {:msg "load-clip" :file-id 0 :from-sample 0 :length 44100})
+  (connect {:msg "calculate" :id 2 :start-sample (- (now) 22000) :order 1.0 :buffers-to-use [2 3]}))
 
 (defn beat->sample [bpm sampleoffset]
   (let [factor (* samplerate (/ 60 bpm))]
