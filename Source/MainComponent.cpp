@@ -11,6 +11,7 @@
 #include <deque>
 #include <unordered_set>
 #include <set>
+#include <queue>
 
 #pragma warning (disable : 4100)
 
@@ -87,7 +88,6 @@ struct Plugin : public Entity {
 			auto success = audioProcessor->setChannelLayoutOfBus(false, i, AudioChannelSet::discreteChannels(outputs[i]));
 			if (!success) { throw ""s + "Plugin does not support " + String{ outputs[i] }.toStdString() + " channels for output bus " + String{ i }.toStdString() + "."; }
 		}
-		//audioProcessor->setChannelLayoutOfBus(false, 0, AudioChannelSet::discreteChannels(2));
 		audioProcessor->prepareToPlay(sampleRate, 441);
 	}
 
@@ -156,27 +156,31 @@ struct Plugin : public Entity {
 enum BufferProcessorMode { CLEAR, ADD, COPY };
 
 struct BufferProcessor : public Entity {
-	BufferProcessor(long id, AudioBuffer<double>* bufferToClear, int buffer_id) :
-		buffer1{ bufferToClear }, buffer1_id{ buffer_id }, mode { BufferProcessorMode::CLEAR }, Entity{ id, EntityType::BufferProcessor } {
+	BufferProcessor(long id) :
+		mode { BufferProcessorMode::CLEAR }, Entity{ id, EntityType::BufferProcessor } {
 	}
 
-	BufferProcessor(long id, AudioBuffer<double>* fromBuffer, int fromBufferId, AudioBuffer<double>* toBuffer, int toBufferId, BufferProcessorMode mode) :
-		buffer1{ fromBuffer }, buffer1_id{ fromBufferId }, buffer2{ toBuffer }, buffer2_id{ toBufferId }, mode{ mode }, Entity{ id, EntityType::BufferProcessor } {}
+	BufferProcessor(long id, BufferProcessorMode mode) :
+		mode{ mode }, Entity{ id, EntityType::BufferProcessor } {}
 
 	void process(int64 sampleCount, int numSamples) override {
 		if (mode == BufferProcessorMode::CLEAR) {
-			buffer1->clear();
+			buffer.clear();
+			//buffer1->clear();
 		} else if (mode == BufferProcessorMode::COPY) {
-			buffer2->copyFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
+			buffer.copyFrom(1, 0, buffer.getReadPointer(0), buffer.getNumSamples());
+			//buffer2->copyFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
+			
 		} else if (mode == BufferProcessorMode::ADD) {
-			buffer2->addFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
+			buffer.addFrom(1, 0, buffer.getReadPointer(0), buffer.getNumSamples());
+			//buffer2->addFrom(0, 0, *buffer1, 0, 0, buffer1->getNumSamples());
 		}
 	}
 
-	AudioBuffer<double>* buffer1;
-	int buffer1_id;
-	AudioBuffer<double>* buffer2;
-	int buffer2_id;
+	//AudioBuffer<double>* buffer1;
+	//int buffer1_id;
+	//AudioBuffer<double>* buffer2;
+	//int buffer2_id;
 	BufferProcessorMode mode;
 };
 
@@ -456,18 +460,24 @@ public:
 		
 		// fill input buffers - placed in realtimebuffers[0..17] on my interface
 		audioInterfaceInput->process(bufferToFill);
+
+		// a safety measure - to ensure that these "special" buffers doesn't continue to sound when
+		// ending a calculation.
+		// buffer.clear() has a ghostly behaviour, causing the buffers to not sound AT ALL
+		// but this is not a particularly costly operation compared to normal DSP processing.
+		audioInterfaceOutput->buffer.applyGain(0);
 		
 		// query the audio callback function queue - these functions set up the connections and directs what calculations to perform
-		while (!audioCallbackFunctionQueue.empty() && std::get<0>(*audioCallbackFunctionQueue.begin()) < sampleCount) {
-			auto func = std::get<1>(*audioCallbackFunctionQueue.begin());
-			func(std::get<0>(*audioCallbackFunctionQueue.begin()) - sampleCount);
-			audioCallbackFunctionQueue.erase(*audioCallbackFunctionQueue.begin());
+		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount) {
+			auto func = std::get<1>(audioCallbackFunctionQueue.top());
+			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			audioCallbackFunctionQueue.pop();
 		}
 
-		while (!audioCallbackFunctionQueue.empty() && std::get<0>(*audioCallbackFunctionQueue.begin()) < sampleCount + bufferToFill.numSamples) {
-			auto func = std::get<1>(*audioCallbackFunctionQueue.begin());
-			func(std::get<0>(*audioCallbackFunctionQueue.begin()) - sampleCount);
-			audioCallbackFunctionQueue.erase(*audioCallbackFunctionQueue.begin());
+		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount + bufferToFill.numSamples) {
+			auto func = std::get<1>(audioCallbackFunctionQueue.top());
+			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			audioCallbackFunctionQueue.pop();
 		}
 
 		// collect midi input from each midi input device
@@ -481,7 +491,7 @@ public:
 		for (auto entity : playlist) {
 			entity->process(sampleCount, bufferToFill.numSamples);
 			if (entity->removeFromPlaylist) {
-				audioCallbackFunctionQueue.insert(std::make_tuple(0, [=](int i) {
+				audioCallbackFunctionQueue.push(std::make_tuple(0, [=](int i) {
 					playlist.erase(entity);
 				}));
 			}
@@ -675,7 +685,6 @@ public:
 						mcc->audioFormatReaders[id] = afr;
 						reply["id"] = id;
 					} else if (message == "load-plugin") {
-						int id = nextEntityId();
 						std::vector<int> in;
 						std::vector<int> out;
 						if (msg["inputs"].is_array()) {
@@ -698,9 +707,8 @@ public:
 								}
 							}
 						}
+						int id = nextEntityId();
 						auto plugin = new Plugin{ id, createNewPlugin(msg, "path"), mcc->sampleRate, in, out };
-
-						
 						mcc->entities[id] = plugin;
 						reply["id"] = id;
 					} else if (message == "load-clip") {
@@ -713,30 +721,42 @@ public:
 					} else if (message == "load-buffer-processor") {
 						auto type = getStringInField(msg, "type");
 						if (!msg["clear"].is_null()) {
-							auto bufferId = getValidRealtimeBufferId(msg, "clear");
+							//auto bufferId = getValidRealtimeBufferId(msg, "clear");
 							int id = nextEntityId();
-							mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId], bufferId };
+							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId], bufferId };
+							mcc->entities[id] = new BufferProcessor{ id };
 							reply["id"] = id;
 						} else if (type == "add") {
-							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							auto bufferId2 = getValidRealtimeBufferId(msg, "to");
+							//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+							//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
 							int id = nextEntityId();
-							mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::ADD };
+							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::ADD };
+							mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::ADD };
 							reply["id"] = id;
 						} else if (type == "copy") {
-							auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							auto bufferId2 = getValidRealtimeBufferId(msg, "to");
+							//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+							//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
 							int id = nextEntityId();
-							mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::COPY };
+							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::COPY };
+							mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::COPY };
 							reply["id"] = id;
 						} else {
 							throw "type must be either clear, add or copy."s;
 						}
 					} else if (message == "remove-entity") {
 						auto entity = getValidEntity(msg, "id", mcc->entities);
-						mcc->playlist.erase(mcc->playlist.find(entity));
-						delete entity;
-						mcc->entities[msg["id"]] = nullptr;
+						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
+						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample, [=](int sample) {
+							if (entity != nullptr) {
+								auto iter = mcc->playlist.find(entity);
+								if (iter != mcc->playlist.end()) {
+									mcc->playlist.erase(entity);
+								}
+								delete entity;
+								mcc->entities[msg["id"]] = nullptr;
+							}
+						}));
+											
 					} else if (message == "calculate") {
 						auto entity = getValidEntity(msg, "id", mcc->entities);
 						auto order = getFloatInField(msg, "order");
@@ -744,50 +764,53 @@ public:
 						std::vector<double*> buffersToUse;
 						if (msg["buffers-to-use"].is_array()) {
 							auto buffers = msg["buffers-to-use"];
-							for (int i = 0; i < buffers.size(); i++) {
-								if (buffers[i].is_number_integer()) {
-									int bufId = msg["buffers-to-use"][i];
-									buffersToUse.push_back(mcc->realtimebuffers[bufId].getWritePointer(0));
-								} else {
-									throw "field \"buffers-to-use\" must be an array of integers."s;
+							if (buffers.size() != 0) {
+								for (int i = 0; i < buffers.size(); i++) {
+									if (buffers[i].is_number_integer()) {
+										int bufId = msg["buffers-to-use"][i];
+										buffersToUse.push_back(mcc->realtimebuffers[bufId].getWritePointer(0));
+									} else {
+										throw "field \"buffers-to-use\" must be an array of integers."s;
+									}
 								}
+							} else {
+								throw "buffers-to-use cannot be an empty array."s;
 							}
 						} else {
 							throw "field \"buffers-to-use\" is null or not an array."s;
 						}
-						mcc->audioCallbackFunctionQueue.insert(std::make_tuple(startSample, [=](int sample) mutable {
-							entity->orderOfComputation = order;
-							// this check is just because BufferProcesser gets its buffer references at construction
-							// this design should be revised.
-							// the other processors refer to the data buffers at THIS point, so buffersToUse should always be > 0.
-							if (buffersToUse.size() > 0) {
+						mcc->audioCallbackFunctionQueue.push(std::make_tuple(startSample, [=](int sample) mutable {
+							// since we schedule a calculation, the given entity might be removed and nulled before we
+							// get there.
+							if (entity != nullptr) {
+								entity->orderOfComputation = order;
 								entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
-							}
-							mcc->playlist.insert(entity);
-							if (entity->type == EntityType::SoundFileProcessor) {
-								SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
-								sfp->startClipAtSample = startSample != 0 ? startSample : mcc->sampleCount;
-								sfp->sampleCount = mcc->sampleCount;
+								mcc->playlist.insert(entity);
+								if (entity->type == EntityType::SoundFileProcessor) {
+									SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
+									sfp->startClipAtSample = startSample != 0 ? startSample : mcc->sampleCount;
+									sfp->sampleCount = mcc->sampleCount;
+								}
 							}
 						}));
 						if (msg["end-sample"].is_number_integer()) {
-							mcc->audioCallbackFunctionQueue.insert(std::make_tuple(getIntegerInField(msg, "end-sample"), [=](int sample) {
-								mcc->playlist.erase(mcc->playlist.find(entity));
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(getIntegerInField(msg, "end-sample"), [=](int sample) {
+								if (entity != nullptr) {
+									mcc->playlist.erase(entity);
+								}
 							}));
 						}
 					} else if (message == "remove-calculation") {
-						auto id = getIntegerInField(msg, "id");
+						auto entity = getValidEntity(msg, "id", mcc->entities);
 						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
-						Entity* e = nullptr;
-						for (auto entity : mcc->playlist) {
-							if (entity->id == id) {
-								mcc->audioCallbackFunctionQueue.insert(std::make_tuple(atSample, [=](int sample) {
+						auto found = mcc->playlist.find(entity);
+						if (found != mcc->playlist.end()) {
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample, [=](int sample) {
+								if (entity != nullptr) {
 									mcc->playlist.erase(entity);
-								}));
-								break;
-							}
-						}
-						if (e == nullptr) {
+								}
+							}));
+						} else {
 							msg["reply"] = "The entity is not running."s;
 						}	
 					} else if (message == "add-midi-connection") {
@@ -877,15 +900,15 @@ public:
 									BufferProcessor* bufferProcessor = static_cast<BufferProcessor*>(entity);
 									if (bufferProcessor->mode == BufferProcessorMode::CLEAR) {
 										entity_info["mode"] = "clear";
-										entity_info["buffer-id"] = bufferProcessor->buffer1_id;
+										//entity_info["buffer-id"] = bufferProcessor->buffer1_id;
 									} else if (bufferProcessor->mode == BufferProcessorMode::ADD) {
 										entity_info["mode"] = "add";
-										entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
-										entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
+										//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
+										//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
 									} else if (bufferProcessor->mode == BufferProcessorMode::COPY) {
 										entity_info["mode"] = "copy";
-										entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
-										entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
+										//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
+										//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
 									}
 								} else if (entity->type == EntityType::SoundFileProcessor) {
 									entity_info["type"] = "sound-file-processor";
@@ -923,16 +946,23 @@ public:
 	TCPServer tcpServer{ this };
 	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
-	//std::array<Connection*, CONN_LIMIT> connections;
 	std::array<AudioFormatReader*, FILE_LIMIT> audioFormatReaders;
 	std::array<AudioBuffer<double>, REALTIMEBUFFER_LIMIT> realtimebuffers;
 
 	std::set<Entity*, std::function<bool(Entity*, Entity*)>> playlist{
-		[](Entity* a, Entity* b) { return a->orderOfComputation < b->orderOfComputation; }
+		[](Entity* a, Entity* b) { 
+			if (a->orderOfComputation != b->orderOfComputation) {
+				return a->orderOfComputation < b->orderOfComputation; 
+			} else {
+				return a < b;
+			}
+		}
 	};
 
-	std::set<std::tuple<int64, std::function<void(int)>>, std::function<bool(std::tuple<int64, std::function<void(int)>>, std::tuple<int64, std::function<void(int)>>)>> audioCallbackFunctionQueue{
-		[](std::tuple<int64, std::function<void(int)>> a, std::tuple<int64, std::function<void(int)>> b) { return std::get<0>(a) < std::get<0>(b);  } 
+	std::priority_queue<std::tuple<int64, std::function<void(int)>>, std::vector<std::tuple<int64, std::function<void(int)>>>, std::function<bool(std::tuple<int64, std::function<void(int)>>, std::tuple<int64, std::function<void(int)>>)>> audioCallbackFunctionQueue{
+		[](std::tuple<int64, std::function<void(int)>> a, std::tuple<int64, std::function<void(int)>> b) {
+			return std::get<0>(a) > std::get<0>(b);
+		}
 	};
 
 private:
