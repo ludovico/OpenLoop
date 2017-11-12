@@ -500,6 +500,9 @@ public:
 		// grab output buffers - they are in realtimebuffers[18..35] on my interface
 		audioInterfaceOutput->process(bufferToFill);
 
+		std::cout << audioInterfaceOutput->buffer.getSample(0, 0) << "\n";
+
+
 		sampleCount += bufferToFill.numSamples;
 	}
 
@@ -746,12 +749,13 @@ public:
 					} else if (message == "remove-entity") {
 						auto entity = getValidEntity(msg, "id", mcc->entities);
 						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
-						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample, [=](int sample) {
+						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
 							if (entity != nullptr) {
-								auto iter = mcc->playlist.find(entity);
-								if (iter != mcc->playlist.end()) {
-									mcc->playlist.erase(entity);
-								}
+								// why find it? the erase function erases if entity is there.
+								//auto iter = mcc->playlist.find(entity);
+								//if (iter != mcc->playlist.end()) {
+								mcc->playlist.erase(entity);
+								//}
 								delete entity;
 								mcc->entities[msg["id"]] = nullptr;
 							}
@@ -794,7 +798,7 @@ public:
 							}
 						}));
 						if (msg["end-sample"].is_number_integer()) {
-							mcc->audioCallbackFunctionQueue.push(std::make_tuple(getIntegerInField(msg, "end-sample"), [=](int sample) {
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(getIntegerInField(msg, "end-sample") + mcc->samplesPerBlockExpected, [=](int sample) {
 								if (entity != nullptr) {
 									mcc->playlist.erase(entity);
 								}
@@ -803,16 +807,14 @@ public:
 					} else if (message == "remove-calculation") {
 						auto entity = getValidEntity(msg, "id", mcc->entities);
 						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
-						auto found = mcc->playlist.find(entity);
-						if (found != mcc->playlist.end()) {
-							mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample, [=](int sample) {
-								if (entity != nullptr) {
-									mcc->playlist.erase(entity);
-								}
-							}));
-						} else {
-							msg["reply"] = "The entity is not running."s;
-						}	
+						// we cannot check here whether a calculation is running later.
+						// so we have to defer that to the callback.
+						// also, since we don't have sample granularity for removal, we have to wait to the next block for removal.
+						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
+							if (entity != nullptr) {
+								mcc->playlist.erase(entity);
+							}
+						}));
 					} else if (message == "add-midi-connection") {
 						MidiBuffer* midibuffer;
 						if (msg["source-id"].is_number_integer()) {
