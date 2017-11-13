@@ -12,14 +12,15 @@
 #include <unordered_set>
 #include <set>
 #include <queue>
+#include <mutex>
 
 #pragma warning (disable : 4100)
 
 using namespace std::string_literals;
 
-constexpr int ENTITY_LIMIT = 10000;
-constexpr int FILE_LIMIT = 100000;
-constexpr int REALTIMEBUFFER_LIMIT = 1000;
+constexpr int ENTITY_LIMIT = 100000; // 100.000 * 8 = 800 kB
+constexpr int FILE_LIMIT = 100000; // 100.000 * 8 = 800 kB
+constexpr int REALTIMEBUFFER_LIMIT = 10000; // if buffersize=256, 10.000*256*8 = 20 MB
 
 int entityId = -1;
 
@@ -224,8 +225,19 @@ struct SoundFileProcessor : public Entity {
 			afr->read(&floatbuffer, sampleInDestBuffer, numSamplesToCopy, positionInFile, true, true);
 			positionInFile += numSamplesToCopy;
 		}
+		
+		
 
-		buffer.makeCopyOf(floatbuffer, true);
+		int channelsToCopy = std::min(buffer.getNumChannels(), floatbuffer.getNumChannels());
+		for (int i = 0; i < channelsToCopy; i++) {
+			const float* src = floatbuffer.getReadPointer(i);
+			double* dest = buffer.getWritePointer(i);
+			for (int j = 0; j < floatbuffer.getNumSamples(); j++) {
+				dest[j] = src[j];
+			}
+		}
+
+		//buffer.makeCopyOf(floatbuffer, true);
 	}
 
 	bool firstProcessCall = true;
@@ -468,6 +480,8 @@ public:
 		audioInterfaceOutput->buffer.applyGain(0);
 		
 		// query the audio callback function queue - these functions set up the connections and directs what calculations to perform
+		
+		mutex_lock.lock();
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount) {
 			auto func = std::get<1>(audioCallbackFunctionQueue.top());
 			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
@@ -479,7 +493,7 @@ public:
 			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
 			audioCallbackFunctionQueue.pop();
 		}
-
+		mutex_lock.unlock();
 		// collect midi input from each midi input device
 		for (auto& midi : midiInputDevices) {
 			midi->midiBuffer.clear();
@@ -499,9 +513,6 @@ public:
 
 		// grab output buffers - they are in realtimebuffers[18..35] on my interface
 		audioInterfaceOutput->process(bufferToFill);
-
-		std::cout << audioInterfaceOutput->buffer.getSample(0, 0) << "\n";
-
 
 		sampleCount += bufferToFill.numSamples;
 	}
@@ -654,282 +665,297 @@ public:
 				if (connSocket == nullptr) {
 					continue;
 				}
-				
-				int i;
-				connSocket->read(&i, 4, true);
-				connSocket->read(buf, i, true);
-				buf[i] = 0;
 
-				auto utf8 = CharPointer_UTF8{ buf };
-				auto s = String{ utf8 }.toStdString();
-				auto msg = nlohmann::json::parse(s);
+				bool shouldExitLoop = false;
 
-				nlohmann::json reply;
-				try {
-					auto message = getStringInField(msg, "msg");
+				while (!shouldExitLoop) {
+					int i;
+					connSocket->read(&i, 4, true);
+					connSocket->read(buf, i, true);
+					buf[i] = 0;
 
-					checkValidField(msg, "msgid");
-					reply["msgid"] = msg["msgid"];
-					
-					if (message == "samplerate") {
-						reply["samplerate"] = mcc->sampleRate;
-					} else if (message == "get-input-channels") {
-						reply["id"] = 0;
-					} else if (message == "get-output-channels") {
-						reply["id"] = 1;
-					} else if (message == "load-audio-file") {
-						// Switch to an AudioFormatManager for easy access to aiff, mp3, wma, flac and ogg.
-						WavAudioFormat waf;
-						AudioFormatReader* afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
-						if (afr == nullptr) {
-							throw "The file is not a wav file"s;
-						}
-						auto id = nextAudioFormatReaderId();
-						mcc->audioFormatReaders[id] = afr;
-						reply["id"] = id;
-					} else if (message == "load-plugin") {
-						std::vector<int> in;
-						std::vector<int> out;
-						if (msg["inputs"].is_array()) {
-							auto inputs = msg["inputs"];
-							for (auto input : inputs) {
-								if (input.is_number_integer()) {
-									in.push_back(input);
-								} else {
-									throw "Input array must consist of integers."s;
-								}
+					auto utf8 = CharPointer_UTF8{ buf };
+					auto s = String{ utf8 }.toStdString();
+					auto msg = nlohmann::json::parse(s);
+
+					nlohmann::json reply;
+					try {
+						auto message = getStringInField(msg, "msg");
+
+						checkValidField(msg, "msgid");
+						reply["msgid"] = msg["msgid"];
+
+						if (message == "samplerate") {
+							reply["samplerate"] = mcc->sampleRate;
+						} else if (message == "get-input-channels") {
+							reply["id"] = 0;
+						} else if (message == "get-output-channels") {
+							reply["id"] = 1;
+						} else if (message == "load-audio-file") {
+							// Switch to an AudioFormatManager for easy access to aiff, mp3, wma, flac and ogg.
+							WavAudioFormat waf;
+							AudioFormatReader* afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
+							if (afr == nullptr) {
+								throw "The file is not a wav file"s;
 							}
-						}
-						if (msg["outputs"].is_array()) {
-							auto outputs = msg["outputs"];
-							for (auto output : outputs) {
-								if (output.is_number_integer()) {
-									out.push_back(output);
-								} else {
-									throw "Output array must consist of integers."s;
-								}
-							}
-						}
-						int id = nextEntityId();
-						auto plugin = new Plugin{ id, createNewPlugin(msg, "path"), mcc->sampleRate, in, out };
-						mcc->entities[id] = plugin;
-						reply["id"] = id;
-					} else if (message == "load-clip") {
-						auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
-						auto fromSample = msg["from-sample"].is_null() ? 0 : getIntegerInField(msg, "from-sample");
-						auto length = msg["length"].is_null() ? LONG_MAX : getIntegerInField(msg, "length");
-						int id = nextEntityId();
-						mcc->entities[id] = new SoundFileProcessor(id, afr, fromSample, length);
-						reply["id"] = id;
-					} else if (message == "load-buffer-processor") {
-						auto type = getStringInField(msg, "type");
-						if (!msg["clear"].is_null()) {
-							//auto bufferId = getValidRealtimeBufferId(msg, "clear");
-							int id = nextEntityId();
-							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId], bufferId };
-							mcc->entities[id] = new BufferProcessor{ id };
+							auto id = nextAudioFormatReaderId();
+							mcc->audioFormatReaders[id] = afr;
 							reply["id"] = id;
-						} else if (type == "add") {
-							//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
-							int id = nextEntityId();
-							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::ADD };
-							mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::ADD };
-							reply["id"] = id;
-						} else if (type == "copy") {
-							//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
-							//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
-							int id = nextEntityId();
-							//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::COPY };
-							mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::COPY };
-							reply["id"] = id;
-						} else {
-							throw "type must be either clear, add or copy."s;
-						}
-					} else if (message == "remove-entity") {
-						auto entity = getValidEntity(msg, "id", mcc->entities);
-						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
-						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
-							if (entity != nullptr) {
-								// why find it? the erase function erases if entity is there.
-								//auto iter = mcc->playlist.find(entity);
-								//if (iter != mcc->playlist.end()) {
-								mcc->playlist.erase(entity);
-								//}
-								delete entity;
-								mcc->entities[msg["id"]] = nullptr;
-							}
-						}));
-											
-					} else if (message == "calculate") {
-						auto entity = getValidEntity(msg, "id", mcc->entities);
-						auto order = getFloatInField(msg, "order");
-						auto startSample = msg["start-sample"].is_null() ? 0 : getIntegerInField(msg, "start-sample");
-						std::vector<double*> buffersToUse;
-						if (msg["buffers-to-use"].is_array()) {
-							auto buffers = msg["buffers-to-use"];
-							if (buffers.size() != 0) {
-								for (int i = 0; i < buffers.size(); i++) {
-									if (buffers[i].is_number_integer()) {
-										int bufId = msg["buffers-to-use"][i];
-										buffersToUse.push_back(mcc->realtimebuffers[bufId].getWritePointer(0));
+						} else if (message == "load-plugin") {
+							std::vector<int> in;
+							std::vector<int> out;
+							if (msg["inputs"].is_array()) {
+								auto inputs = msg["inputs"];
+								for (auto input : inputs) {
+									if (input.is_number_integer()) {
+										in.push_back(input);
 									} else {
-										throw "field \"buffers-to-use\" must be an array of integers."s;
+										throw "Input array must consist of integers."s;
 									}
 								}
-							} else {
-								throw "buffers-to-use cannot be an empty array."s;
 							}
-						} else {
-							throw "field \"buffers-to-use\" is null or not an array."s;
-						}
-						mcc->audioCallbackFunctionQueue.push(std::make_tuple(startSample, [=](int sample) mutable {
-							// since we schedule a calculation, the given entity might be removed and nulled before we
-							// get there.
-							if (entity != nullptr) {
-								entity->orderOfComputation = order;
-								entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
-								mcc->playlist.insert(entity);
-								if (entity->type == EntityType::SoundFileProcessor) {
-									SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
-									sfp->startClipAtSample = startSample != 0 ? startSample : mcc->sampleCount;
-									sfp->sampleCount = mcc->sampleCount;
+							if (msg["outputs"].is_array()) {
+								auto outputs = msg["outputs"];
+								for (auto output : outputs) {
+									if (output.is_number_integer()) {
+										out.push_back(output);
+									} else {
+										throw "Output array must consist of integers."s;
+									}
 								}
 							}
-						}));
-						if (msg["end-sample"].is_number_integer()) {
-							mcc->audioCallbackFunctionQueue.push(std::make_tuple(getIntegerInField(msg, "end-sample") + mcc->samplesPerBlockExpected, [=](int sample) {
+							int id = nextEntityId();
+							auto plugin = new Plugin{ id, createNewPlugin(msg, "path"), mcc->sampleRate, in, out };
+							mcc->entities[id] = plugin;
+							reply["id"] = id;
+						} else if (message == "load-clip") {
+							auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
+							auto fromSample = msg["from-sample"].is_null() ? 0 : getIntegerInField(msg, "from-sample");
+							auto length = msg["length"].is_null() ? LONG_MAX : getIntegerInField(msg, "length");
+							int id = nextEntityId();
+							mcc->entities[id] = new SoundFileProcessor(id, afr, fromSample, length);
+							reply["id"] = id;
+						} else if (message == "load-buffer-processor") {
+							auto type = getStringInField(msg, "type");
+							if (!msg["clear"].is_null()) {
+								//auto bufferId = getValidRealtimeBufferId(msg, "clear");
+								int id = nextEntityId();
+								//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId], bufferId };
+								mcc->entities[id] = new BufferProcessor{ id };
+								reply["id"] = id;
+							} else if (type == "add") {
+								//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+								//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
+								int id = nextEntityId();
+								//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::ADD };
+								mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::ADD };
+								reply["id"] = id;
+							} else if (type == "copy") {
+								//auto bufferId1 = getValidRealtimeBufferId(msg, "from");
+								//auto bufferId2 = getValidRealtimeBufferId(msg, "to");
+								int id = nextEntityId();
+								//mcc->entities[id] = new BufferProcessor{ id, &mcc->realtimebuffers[bufferId1], bufferId1, &mcc->realtimebuffers[bufferId2], bufferId2, BufferProcessorMode::COPY };
+								mcc->entities[id] = new BufferProcessor{ id, BufferProcessorMode::COPY };
+								reply["id"] = id;
+							} else {
+								throw "type must be either clear, add or copy."s;
+							}
+						} else if (message == "remove-entity") {
+							auto entity = getValidEntity(msg, "id", mcc->entities);
+							auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
+							mcc->mutex_lock.lock();
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
+								if (entity != nullptr) {
+									// why find it? the erase function erases if entity is there.
+									//auto iter = mcc->playlist.find(entity);
+									//if (iter != mcc->playlist.end()) {
+									mcc->playlist.erase(entity);
+									//}
+									delete entity;
+									mcc->entities[msg["id"]] = nullptr;
+								}
+							}));
+							mcc->mutex_lock.unlock();
+						} else if (message == "calculate") {
+							auto entity = getValidEntity(msg, "id", mcc->entities);
+							auto order = getFloatInField(msg, "order");
+							auto startSample = msg["start-sample"].is_null() ? 0 : getIntegerInField(msg, "start-sample");
+							std::vector<double*> buffersToUse;
+							if (msg["buffers-to-use"].is_array()) {
+								auto buffers = msg["buffers-to-use"];
+								if (buffers.size() != 0) {
+									for (int i = 0; i < buffers.size(); i++) {
+										if (buffers[i].is_number_integer()) {
+											int bufId = msg["buffers-to-use"][i];
+											buffersToUse.push_back(mcc->realtimebuffers[bufId].getWritePointer(0));
+										} else {
+											throw "field \"buffers-to-use\" must be an array of integers."s;
+										}
+									}
+								} else {
+									throw "buffers-to-use cannot be an empty array."s;
+								}
+							} else {
+								throw "field \"buffers-to-use\" is null or not an array."s;
+							}
+							mcc->mutex_lock.lock();
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(startSample, [=](int sample) mutable {
+								// since we schedule a calculation, the given entity might be removed and nulled before we
+								// get there.
+								if (entity != nullptr) {
+									entity->orderOfComputation = order;
+									entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+									mcc->playlist.insert(entity);
+									if (entity->type == EntityType::SoundFileProcessor) {
+										SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
+										sfp->startClipAtSample = startSample != 0 ? startSample : mcc->sampleCount;
+										sfp->sampleCount = mcc->sampleCount;
+									}
+								}
+							}));
+							if (msg["end-sample"].is_number_integer()) {
+								mcc->audioCallbackFunctionQueue.push(std::make_tuple(getIntegerInField(msg, "end-sample") + mcc->samplesPerBlockExpected, [=](int sample) {
+									if (entity != nullptr) {
+										mcc->playlist.erase(entity);
+									}
+								}));
+							}
+							mcc->mutex_lock.unlock();
+						} else if (message == "remove-calculation") {
+							auto entity = getValidEntity(msg, "id", mcc->entities);
+							auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
+							// we cannot check here whether a calculation is running later.
+							// so we have to defer that to the callback.
+							// also, since we don't have sample granularity for removal, we have to wait to the next block for removal.
+							mcc->mutex_lock.lock();
+							mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
 								if (entity != nullptr) {
 									mcc->playlist.erase(entity);
 								}
 							}));
-						}
-					} else if (message == "remove-calculation") {
-						auto entity = getValidEntity(msg, "id", mcc->entities);
-						auto atSample = msg["at-sample"].is_null() ? 0 : getIntegerInField(msg, "at-sample");
-						// we cannot check here whether a calculation is running later.
-						// so we have to defer that to the callback.
-						// also, since we don't have sample granularity for removal, we have to wait to the next block for removal.
-						mcc->audioCallbackFunctionQueue.push(std::make_tuple(atSample + mcc->samplesPerBlockExpected, [=](int sample) {
-							if (entity != nullptr) {
-								mcc->playlist.erase(entity);
-							}
-						}));
-					} else if (message == "add-midi-connection") {
-						MidiBuffer* midibuffer;
-						if (msg["source-id"].is_number_integer()) {
-							midibuffer = &(getPlugin(msg, "source-id", mcc->entities)->midibuffer);
-						} else if (msg["source-id"].is_string()) {
-							auto str = getStringInField(msg, "source-id");
-							if (str == "m00") {
-								midibuffer = &(mcc->midiInputDevices[0]->midiBuffer);
-							} else if (str == "m01") {
-								midibuffer = &(mcc->midiInputDevices[1]->midiBuffer);
-							} else if (str == "m02") {
-								midibuffer = &(mcc->midiInputDevices[2]->midiBuffer);
-							} else if (str == "m03") {
-								midibuffer = &(mcc->midiInputDevices[3]->midiBuffer);
-							} else if (str == "m04") {
-								midibuffer = &(mcc->midiInputDevices[4]->midiBuffer);
-							} else if (str == "m05") {
-								midibuffer = &(mcc->midiInputDevices[5]->midiBuffer);
-							} else if (str == "m06") {
-								midibuffer = &(mcc->midiInputDevices[6]->midiBuffer);
-							} else {
-								throw "valid midi inputs are m00-m06.";
-							}
-						} else {
-							throw "Field \"source-id\" must be present and be either an integer or a string."s;
-						}
-						getPlugin(msg, "dest-id", mcc->entities)->midiSources.push_back(midibuffer);
-					} else if (message == "plugin-queue-midi") {
-						auto entity = getPlugin(msg, "id", mcc->entities);
-						if (msg["midi"].is_array()) {
-							auto midivec = msg["midi"];
-							for (int i = 0; i < midivec.size(); i++) {
-								if (midivec[i].is_object()) {
-									auto obj = midivec[i];
-									auto sample = getIntegerInField(obj, "sample");
-									auto type = getStringInField(obj, "type");
-									if (type == "on") {
-										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
-									} else if (type == "off") {
-										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
-									} else if (type == "cc") {
-										entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val")))));
-									} else {
-										throw "midi type not understood."s;
-									}
+							mcc->mutex_lock.unlock();
+						} else if (message == "add-midi-connection") {
+							MidiBuffer* midibuffer;
+							if (msg["source-id"].is_number_integer()) {
+								midibuffer = &(getPlugin(msg, "source-id", mcc->entities)->midibuffer);
+							} else if (msg["source-id"].is_string()) {
+								auto str = getStringInField(msg, "source-id");
+								if (str == "m00") {
+									midibuffer = &(mcc->midiInputDevices[0]->midiBuffer);
+								} else if (str == "m01") {
+									midibuffer = &(mcc->midiInputDevices[1]->midiBuffer);
+								} else if (str == "m02") {
+									midibuffer = &(mcc->midiInputDevices[2]->midiBuffer);
+								} else if (str == "m03") {
+									midibuffer = &(mcc->midiInputDevices[3]->midiBuffer);
+								} else if (str == "m04") {
+									midibuffer = &(mcc->midiInputDevices[4]->midiBuffer);
+								} else if (str == "m05") {
+									midibuffer = &(mcc->midiInputDevices[5]->midiBuffer);
+								} else if (str == "m06") {
+									midibuffer = &(mcc->midiInputDevices[6]->midiBuffer);
 								} else {
-									throw "array should contain objects"s;
+									throw "valid midi inputs are m00-m06.";
 								}
+							} else {
+								throw "Field \"source-id\" must be present and be either an integer or a string."s;
 							}
-						} else {
-							throw "field midi does not exist or is not an array"s;
-						}
-					} else if (message == "plugin-clear-queue-midi") {
-						auto entity = getPlugin(msg, "id", mcc->entities);
-						entity->midiQueue.clear();
-						entity->audioProcessor->reset();
-					} else if (message == "plugin-open-editor") {
-						// consider a mechanism for default values for non-mandatory fields
-						int x, y;
-						if (!msg["x"].is_number_integer() || !msg["y"].is_number_integer()) {
-							x = 10; y = 10;
-						} else {
-							x = msg["x"]; y = msg["y"];
-						}
-						Plugin* plugin = getPlugin(msg, "id", mcc->entities);
-						plugin->createEditorWindow(x, y);
-					} else if (message == "plugin-close-editor") {
-						Plugin* plugin = getPlugin(msg, "id", mcc->entities);
-						plugin->deleteEditorWindow();
-					} else if (message == "get-sample-time") {
-						reply["sample"] = mcc->sampleCount;
-					} else if (message == "get-entity-info") {
-						reply["entity-info"] = nlohmann::json::array();
-						for (auto entity : mcc->entities) {
-							if (entity != nullptr) {
-								auto entity_info = nlohmann::json::object();
-								entity_info["id"] = entity->id;
-								if (entity->type == EntityType::Plugin) {
-									entity_info["type"] = "plugin";
-									Plugin* plugin = static_cast<Plugin*>(entity);
-									entity_info["name"] = plugin->audioProcessor->getName().toStdString();
-									entity_info["latency"] = plugin->audioProcessor->getLatencySamples();
-								} else if (entity->type == EntityType::BufferProcessor) {
-									entity_info["type"] = "buffer-processor";
-									BufferProcessor* bufferProcessor = static_cast<BufferProcessor*>(entity);
-									if (bufferProcessor->mode == BufferProcessorMode::CLEAR) {
-										entity_info["mode"] = "clear";
-										//entity_info["buffer-id"] = bufferProcessor->buffer1_id;
-									} else if (bufferProcessor->mode == BufferProcessorMode::ADD) {
-										entity_info["mode"] = "add";
-										//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
-										//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
-									} else if (bufferProcessor->mode == BufferProcessorMode::COPY) {
-										entity_info["mode"] = "copy";
-										//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
-										//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
+							getPlugin(msg, "dest-id", mcc->entities)->midiSources.push_back(midibuffer);
+						} else if (message == "plugin-queue-midi") {
+							auto entity = getPlugin(msg, "id", mcc->entities);
+							if (msg["midi"].is_array()) {
+								auto midivec = msg["midi"];
+								for (int i = 0; i < midivec.size(); i++) {
+									if (midivec[i].is_object()) {
+										auto obj = midivec[i];
+										auto sample = getIntegerInField(obj, "sample");
+										auto type = getStringInField(obj, "type");
+										if (type == "on") {
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
+										} else if (type == "off") {
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
+										} else if (type == "cc") {
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val")))));
+										} else {
+											throw "midi type not understood."s;
+										}
+									} else {
+										throw "array should contain objects"s;
 									}
-								} else if (entity->type == EntityType::SoundFileProcessor) {
-									entity_info["type"] = "sound-file-processor";
 								}
-								reply["entity-info"].emplace_back(entity_info);
+							} else {
+								throw "field midi does not exist or is not an array"s;
 							}
+						} else if (message == "plugin-clear-queue-midi") {
+							auto entity = getPlugin(msg, "id", mcc->entities);
+							entity->midiQueue.clear();
+							entity->audioProcessor->reset();
+						} else if (message == "plugin-open-editor") {
+							// consider a mechanism for default values for non-mandatory fields
+							int x, y;
+							if (!msg["x"].is_number_integer() || !msg["y"].is_number_integer()) {
+								x = 10; y = 10;
+							} else {
+								x = msg["x"]; y = msg["y"];
+							}
+							Plugin* plugin = getPlugin(msg, "id", mcc->entities);
+							plugin->createEditorWindow(x, y);
+						} else if (message == "plugin-close-editor") {
+							Plugin* plugin = getPlugin(msg, "id", mcc->entities);
+							plugin->deleteEditorWindow();
+						} else if (message == "get-sample-time") {
+							reply["sample"] = mcc->sampleCount;
+						} else if (message == "get-entity-info") {
+							reply["entity-info"] = nlohmann::json::array();
+							for (auto entity : mcc->entities) {
+								if (entity != nullptr) {
+									auto entity_info = nlohmann::json::object();
+									entity_info["id"] = entity->id;
+									if (entity->type == EntityType::Plugin) {
+										entity_info["type"] = "plugin";
+										Plugin* plugin = static_cast<Plugin*>(entity);
+										entity_info["name"] = plugin->audioProcessor->getName().toStdString();
+										entity_info["latency"] = plugin->audioProcessor->getLatencySamples();
+									} else if (entity->type == EntityType::BufferProcessor) {
+										entity_info["type"] = "buffer-processor";
+										BufferProcessor* bufferProcessor = static_cast<BufferProcessor*>(entity);
+										if (bufferProcessor->mode == BufferProcessorMode::CLEAR) {
+											entity_info["mode"] = "clear";
+											//entity_info["buffer-id"] = bufferProcessor->buffer1_id;
+										} else if (bufferProcessor->mode == BufferProcessorMode::ADD) {
+											entity_info["mode"] = "add";
+											//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
+											//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
+										} else if (bufferProcessor->mode == BufferProcessorMode::COPY) {
+											entity_info["mode"] = "copy";
+											//entity_info["from-buffer-id"] == bufferProcessor->buffer1_id;
+											//entity_info["to-buffer-id"] == bufferProcessor->buffer2_id;
+										}
+									} else if (entity->type == EntityType::SoundFileProcessor) {
+										entity_info["type"] = "sound-file-processor";
+									}
+									reply["entity-info"].emplace_back(entity_info);
+								}
+							}
+						} else if (message == "close-conn") {
+							reply["ok"] = "ok";
+							shouldExitLoop = true;
+						} else {
+							throw "message not understood."s;
 						}
-					} else {
-						throw "message not understood."s;
+					} catch (std::string error) {
+						reply["error"] = error;
+						shouldExitLoop = true;
 					}
-				} catch (std::string error) {
-					reply["error"] = error;
+
+					auto replystring = reply.dump();
+					auto replybuf = replystring.data();
+					int replysize = strlen(replybuf);
+					connSocket->write(&replysize, 4);
+					connSocket->write(replybuf, replysize);
+
 				}
-				
-				auto replystring = reply.dump();
-				auto replybuf = replystring.data();
-				int replysize = strlen(replybuf);
-				connSocket->write(&replysize, 4);
-				connSocket->write(replybuf, replysize);
+				connSocket->close();
 			}
 		}
 
@@ -941,6 +967,7 @@ public:
 	AudioSourcePlayer audioSourcePlayer;
 	InputProcessor* audioInterfaceInput;
 	OutputProcessor* audioInterfaceOutput;
+	std::mutex mutex_lock;
 	bool initialized = false;
 	int64 sampleCount = 0;
 	double sampleRate;
