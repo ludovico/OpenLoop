@@ -55,7 +55,7 @@ private:
 };
 
 enum class EntityType {
-	Plugin, BufferProcessor, InputProcessor, OutputProcessor, MidiInput, SoundFileProcessor
+	Plugin, BufferProcessor, InputProcessor, OutputProcessor, MidiInput, SoundFileProcessor, VolumeProcessor
 };
 
 struct Entity {
@@ -249,6 +249,54 @@ struct SoundFileProcessor : public Entity {
 	int64 startSample;
 	int64 endSample;
 	int64 positionInFile;
+};
+
+enum class VolumeProcessorParameterType {
+	VOLUME, RATE, LIMIT
+};
+
+struct VolumeProcessorParameter {
+	VolumeProcessorParameter(VolumeProcessorParameterType type, int64 sample, double value) : type{ type }, sample{ sample }, value{ value } {}
+
+	VolumeProcessorParameterType type;
+	int64 sample;
+	double value;
+};
+
+struct VolumeProcessor : public Entity {
+	VolumeProcessor(long id) : Entity{ id, EntityType::VolumeProcessor } {
+		
+	}
+
+	void process(int64 sampleCount, int numSamples) {
+		double** bufs = buffer.getArrayOfWritePointers();
+
+		for (int samp = 0; samp < numSamples; samp++) {
+			while (!parameterChanges.empty() && parameterChanges.front().sample <= samp + sampleCount) {
+				auto parameterChange = parameterChanges.front();
+				if (parameterChange.type == VolumeProcessorParameterType::VOLUME) {
+					volume = parameterChange.value;
+				} else if (parameterChange.type == VolumeProcessorParameterType::RATE) {
+					rate = parameterChange.value;
+				} else {
+					limit = parameterChange.value;
+				}
+				parameterChanges.pop_front();
+			}
+			volume *= rate;
+			if (volume > limit) {
+				volume = limit;
+			}
+			for (int ch = 0; ch < buffer.getNumChannels(); ch++) {
+				bufs[ch][samp] = bufs[ch][samp] * volume;
+			}
+		}
+	}
+
+	std::deque<VolumeProcessorParameter> parameterChanges;
+	double volume = 1;
+	double rate = 1;
+	double limit = 1;
 };
 
 struct InputProcessor {
@@ -735,6 +783,10 @@ public:
 							int id = nextEntityId();
 							mcc->entities[id] = new SoundFileProcessor(id, afr, fromSample, length);
 							reply["id"] = id;
+						} else if (message == "load-volume-processor") {
+							int id = nextEntityId();
+							mcc->entities[id] = new VolumeProcessor(id);
+							reply["id"] = id;
 						} else if (message == "load-buffer-processor") {
 							auto type = getStringInField(msg, "type");
 							if (!msg["clear"].is_null()) {
@@ -903,6 +955,37 @@ public:
 						} else if (message == "plugin-close-editor") {
 							Plugin* plugin = getPlugin(msg, "id", mcc->entities);
 							plugin->deleteEditorWindow();
+						} else if (message == "volume-queue-param") {
+							auto entity = getValidEntity(msg, "id", mcc->entities);
+							if (entity->type == EntityType::VolumeProcessor) {
+								VolumeProcessor* vp = static_cast<VolumeProcessor*>(entity);
+								if (msg["params"].is_array()) {
+									auto paramvec = msg["params"];
+									for (int i = 0; i < paramvec.size(); i++) {
+										if (paramvec[i].is_object()) {
+											auto obj = paramvec[i];
+											auto sample = getIntegerInField(obj, "sample");
+											auto value = getFloatInField(obj, "value");
+											auto type = getStringInField(obj, "type");
+											if (type == "volume") {
+												vp->parameterChanges.emplace_back(VolumeProcessorParameterType::VOLUME, sample, value);
+											} else if (type == "rate") {
+												vp->parameterChanges.emplace_back(VolumeProcessorParameterType::RATE, sample, value);
+											} else if (type == "limit") {
+												vp->parameterChanges.emplace_back(VolumeProcessorParameterType::LIMIT, sample, value);
+											} else {
+												throw "volume param type not understood."s;
+											}
+										} else {
+											throw "array should contain objects"s;
+										}
+									}
+								} else {
+									throw "field params does not exist or is not an array"s;
+								}
+							} else {
+								throw "Entity not a volume processor"s;
+							}
 						} else if (message == "get-sample-time") {
 							reply["sample"] = mcc->sampleCount;
 						} else if (message == "get-entity-info") {
