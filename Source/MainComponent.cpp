@@ -21,6 +21,7 @@ using namespace std::string_literals;
 constexpr int ENTITY_LIMIT = 100000; // 100.000 * 8 = 800 kB
 constexpr int FILE_LIMIT = 100000; // 100.000 * 8 = 800 kB
 constexpr int REALTIMEBUFFER_LIMIT = 10000; // if buffersize=256, 10.000*256*8 = 20 MB
+constexpr int FILEBUFFER_LIMIT = 10000;
 
 int entityId = -1;
 
@@ -34,6 +35,13 @@ int audioFormatReaderId = -1;
 int nextAudioFormatReaderId() {
 	audioFormatReaderId += 1;
 	return audioFormatReaderId;
+}
+
+int fileBufferId = -1;
+
+int nextFileBufferId() {
+	fileBufferId += 1;
+	return fileBufferId;
 }
 
 MessageManager* messageManager;
@@ -109,7 +117,7 @@ struct Plugin : public Entity {
 		}
 
 		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount + numSamples) {
-			midibuffer.addEvent(std::get<1>(midiQueue.front()), std::get<0>(midiQueue.front()) - sampleCount);
+			midibuffer.addEvent(std::get<1>(midiQueue.front()), static_cast<int>(std::get<0>(midiQueue.front()) - sampleCount));
 			midiQueue.pop_front();
 		}
 
@@ -186,7 +194,80 @@ struct BufferProcessor : public Entity {
 };
 
 struct SoundFileProcessor : public Entity {
-	SoundFileProcessor(long id, AudioFormatReader* afr, int64 startSample, int64 length) : 
+	SoundFileProcessor(long id, AudioBuffer<float>& buffer, int startSample, int length) :
+		floatbuffer{ buffer }, startSample{ startSample }, Entity{ id, EntityType::SoundFileProcessor } {
+		endSample = startSample + length;
+		if (endSample > buffer.getNumSamples()) {
+			endSample = buffer.getNumSamples();
+		} else if (endSample < 0) {
+			endSample = 0;
+		}
+		if (startSample < 0) {
+			startSample = 0;
+		} else if (startSample > endSample) {
+			startSample = endSample;
+		}
+		positionInFile = startSample;
+	}
+
+	void process(int64 sampleCount, int numSamples) override {
+		if (firstProcessCall) {
+			sampleInDestBuffer = static_cast<int>(startClipAtSample - sampleCount);
+			jassert(sampleInDestBuffer < numSamples); // this holds as long as the audiocallback queue is working correctly.
+
+			if (sampleInDestBuffer < 0) { // we are too late and must correct the position in file.
+				positionInFile -= sampleInDestBuffer; // advance the position (- and - is +)
+				sampleInDestBuffer = 0;
+			}
+
+			firstProcessCall = false;
+		} else {
+			sampleInDestBuffer = 0;
+		}
+
+		//floatbuffer.setSize(afr->numChannels, buffer.getNumSamples(), false, false, true);
+		buffer.clear();
+
+		int channelsToCopy = std::min(buffer.getNumChannels(), floatbuffer.getNumChannels());
+		int numSamplesToCopy = std::min(buffer.getNumSamples() - sampleInDestBuffer, static_cast<int>(endSample - positionInFile));
+		if (numSamplesToCopy > 0) {
+			for (int chan = 0; chan < channelsToCopy; chan++) {
+				const float* src = floatbuffer.getReadPointer(chan);
+				double* dest = buffer.getWritePointer(chan);
+				for (int i = sampleInDestBuffer, j = positionInFile; i < numSamplesToCopy + sampleInDestBuffer; i++, j++) {
+					dest[i] = src[j];
+				}
+			}
+			
+			//afr->read(&floatbuffer, sampleInDestBuffer, numSamplesToCopy, positionInFile, true, true);
+			
+			
+			positionInFile += numSamplesToCopy;
+		}
+		
+		/*for (int i = 0; i < channelsToCopy; i++) {
+			const float* src = floatbuffer.getReadPointer(i);
+			double* dest = buffer.getWritePointer(i);
+			for (int j = 0; j < floatbuffer.getNumSamples(); j++) {
+				dest[j] = src[j];
+			}
+		}*/
+
+		//buffer.makeCopyOf(floatbuffer, true);
+	}
+
+	bool firstProcessCall = true;
+	int64 startClipAtSample = 0;
+	//int sampleCount = 0;
+	int sampleInDestBuffer = 0;
+	AudioBuffer<float>& floatbuffer;
+	int startSample;
+	int endSample;
+	int positionInFile;
+};
+
+/*struct SoundFileProcessor : public Entity {
+	SoundFileProcessor(long id, MemoryMappedAudioFormatReader* afr, int64 startSample, int64 length) : 
 		afr{ afr }, startSample{ startSample }, Entity{ id, EntityType::SoundFileProcessor } {
 		endSample = startSample + length;
 		if (endSample > afr->lengthInSamples) {
@@ -245,11 +326,11 @@ struct SoundFileProcessor : public Entity {
 	int sampleCount = 0;
 	int sampleInDestBuffer = 0;
 	AudioBuffer<float> floatbuffer;
-	AudioFormatReader* afr;
+	MemoryMappedAudioFormatReader* afr;
 	int64 startSample;
 	int64 endSample;
 	int64 positionInFile;
-};
+};*/
 
 enum class VolumeProcessorParameterType {
 	VOLUME, RATE, LIMIT
@@ -305,7 +386,7 @@ struct InputProcessor {
 		for (int i = 0; i < numChannels; i++) {
 			inBufs.push_back(realtimebuffers[i].getWritePointer(0));
 		}
-		buffer.setDataToReferTo(inBufs.data(), inBufs.size(), samplesPerBlockExpected);
+		buffer.setDataToReferTo(inBufs.data(), static_cast<int>(inBufs.size()), samplesPerBlockExpected);
 	}
 
 	void process(const AudioSourceChannelInfo& bufferToFill) {
@@ -326,7 +407,7 @@ struct OutputProcessor {
 			realtimebuffers[i + startBuffer].clear();
 			outBufs.push_back(realtimebuffers[i + startBuffer].getWritePointer(0));
 		}
-		buffer.setDataToReferTo(outBufs.data(), outBufs.size(), samplesPerBlockExpected);
+		buffer.setDataToReferTo(outBufs.data(), static_cast<int>(outBufs.size()), samplesPerBlockExpected);
 	}
 
 	void process(const AudioSourceChannelInfo& bufferToFill) {
@@ -430,7 +511,7 @@ public:
 
 		deviceManager.initialise(64, 64, nullptr, true);
 		
-		if (getMachine() == "deskto") {
+		if (getMachine() == "desktop") {
 			AudioDeviceManager::AudioDeviceSetup ads;
 			deviceManager.getAudioDeviceSetup(ads);
 			ads.inputDeviceName = "ASIO Fireface USB";
@@ -532,13 +613,15 @@ public:
 		mutex_lock.lock();
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount) {
 			auto func = std::get<1>(audioCallbackFunctionQueue.top());
-			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			int bufferPos = static_cast<int>(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			func(bufferPos);
 			audioCallbackFunctionQueue.pop();
 		}
 
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount + bufferToFill.numSamples) {
 			auto func = std::get<1>(audioCallbackFunctionQueue.top());
-			func(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			int bufferPos = static_cast<int>(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			func(bufferPos);
 			audioCallbackFunctionQueue.pop();
 		}
 		mutex_lock.unlock();
@@ -561,6 +644,8 @@ public:
 
 		// grab output buffers - they are in realtimebuffers[18..35] on my interface
 		audioInterfaceOutput->process(bufferToFill);
+
+		//std::cout << bufferToFill.buffer->getSample(0, 0) << "\n";
 
 		sampleCount += bufferToFill.numSamples;
 	}
@@ -622,33 +707,51 @@ public:
 		}
 
 		int getValidEntityId(nlohmann::json& msg, const std::string& field) {
-			int id = getIntegerInField(msg, field);
-			if (id < 0 && id >= ENTITY_LIMIT) {
+			int64 id = getIntegerInField(msg, field);
+			if (id < 0 || id >= ENTITY_LIMIT) {
 				throw "" + field + " is not within entity limits.";
 			}
-			return id;
+			return static_cast<int>(id);
 		}
 
 		int getValidAudioFormatReaderId(nlohmann::json& msg, const std::string& field) {
-			int id = getIntegerInField(msg, field);
-			if (id < 0 && id >= FILE_LIMIT) {
+			int64 id = getIntegerInField(msg, field);
+			if (id < 0 || id >= FILE_LIMIT) {
 				throw "" + field + " is not within file limits.";
 			}
+			return static_cast<int>(id);
+		}
+
+		int getValidFileBufferId(nlohmann::json& msg, const std::string& field) {
+			int64 id = getIntegerInField(msg, field);
+			if (id < 0 || id >= FILEBUFFER_LIMIT) {
+				throw "" + field + " is not within file limits.";
+			}
+			return static_cast<int>(id);
 		}
 
 		int getValidRealtimeBufferId(nlohmann::json& msg, const std::string& field) {
-			int id = getIntegerInField(msg, field);
-			if (id < 0 && id >= REALTIMEBUFFER_LIMIT) {
+			int64 id = getIntegerInField(msg, field);
+			if (id < 0 || id >= REALTIMEBUFFER_LIMIT) {
 				throw "" + field + " is not within realtime buffer limits.";
 			}
+			return static_cast<int>(id);
 		}
 
-		AudioFormatReader* getValidAudioFormatReader(nlohmann::json& msg, const std::string& field, std::array<AudioFormatReader*, FILE_LIMIT>& audioFormatReaders) {
-			AudioFormatReader* afr = audioFormatReaders[getValidAudioFormatReaderId(msg, field)];
+		MemoryMappedAudioFormatReader* getValidAudioFormatReader(nlohmann::json& msg, const std::string& field, std::array<MemoryMappedAudioFormatReader*, FILE_LIMIT>& audioFormatReaders) {
+			MemoryMappedAudioFormatReader* afr = audioFormatReaders[getValidAudioFormatReaderId(msg, field)];
 			if (afr == nullptr) {
 				throw "" + field + " is null";
 			}
 			return afr;
+		}
+
+		AudioBuffer<float>& getValidFileBuffer(nlohmann::json& msg, const std::string& field, std::array<AudioBuffer<float>, FILEBUFFER_LIMIT>& filebuffers) {
+			AudioBuffer<float>& buffer{ filebuffers[getValidFileBufferId(msg, field)] };
+			/*if (afr == nullptr) {
+				throw "" + field + " is null";
+			}*/
+			return buffer;
 		}
 
 		Entity* getValidEntity(nlohmann::json& msg, const std::string& field, std::array<Entity*, ENTITY_LIMIT>& entities) {
@@ -717,10 +820,10 @@ public:
 				bool shouldExitLoop = false;
 
 				while (!shouldExitLoop) {
-					int i;
-					connSocket->read(&i, 4, true);
-					connSocket->read(buf, i, true);
-					buf[i] = 0;
+					int messageLength;
+					connSocket->read(&messageLength, 4, true);
+					connSocket->read(buf, messageLength, true);
+					buf[messageLength] = 0;
 
 					auto utf8 = CharPointer_UTF8{ buf };
 					auto s = String{ utf8 }.toStdString();
@@ -739,16 +842,36 @@ public:
 							reply["id"] = 0;
 						} else if (message == "get-output-channels") {
 							reply["id"] = 1;
+						} else if (message == "get-input-buffers") {
+							for (int i = 0; i < mcc->audioInterfaceInput->buffer.getNumChannels(); i++) {
+								reply["buffers"].push_back(i);
+							}
+						} else if (message == "get-output-buffers") {
+							for (int i = 0; i < mcc->audioInterfaceOutput->buffer.getNumChannels(); i++) {
+								auto inputChannels = mcc->audioInterfaceInput->buffer.getNumChannels();
+								reply["buffers"].push_back(i + inputChannels);
+							}
 						} else if (message == "load-audio-file") {
 							// Switch to an AudioFormatManager for easy access to aiff, mp3, wma, flac and ogg.
 							WavAudioFormat waf;
-							AudioFormatReader* afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
+
+							auto afr = waf.createReaderFor(new FileInputStream{ getValidFile(msg, "path") }, true);
+
+							auto id = nextFileBufferId();
+							int length = static_cast<int>(afr->lengthInSamples);
+							mcc->filebuffers[id].setSize(afr->numChannels, length, false, false, true);
+							afr->read(&mcc->filebuffers[id], 0, length, 0, true, true);
+							reply["file-id"] = id;
+							/*MemoryMappedAudioFormatReader* afr = waf.createMemoryMappedReader(getValidFile(msg, "path"));
 							if (afr == nullptr) {
 								throw "The file is not a wav file"s;
 							}
+							if (!afr->mapEntireFile()) {
+								throw "File couldn't be mapped to memory."s;
+							}
 							auto id = nextAudioFormatReaderId();
 							mcc->audioFormatReaders[id] = afr;
-							reply["id"] = id;
+							reply["file-id"] = id;*/
 						} else if (message == "load-plugin") {
 							std::vector<int> in;
 							std::vector<int> out;
@@ -777,11 +900,13 @@ public:
 							mcc->entities[id] = plugin;
 							reply["id"] = id;
 						} else if (message == "load-clip") {
-							auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
+							//auto afr = getValidAudioFormatReader(msg, "file-id", mcc->audioFormatReaders);
+							auto& buffer = getValidFileBuffer(msg, "file-id", mcc->filebuffers);
 							auto fromSample = msg["from-sample"].is_null() ? 0 : getIntegerInField(msg, "from-sample");
 							auto length = msg["length"].is_null() ? LONG_MAX : getIntegerInField(msg, "length");
 							int id = nextEntityId();
-							mcc->entities[id] = new SoundFileProcessor(id, afr, fromSample, length);
+							//afr->touchSample(fromSample);
+							mcc->entities[id] = new SoundFileProcessor(id, buffer, static_cast<int>(fromSample), static_cast<int>(length));
 							reply["id"] = id;
 						} else if (message == "load-volume-processor") {
 							int id = nextEntityId();
@@ -856,12 +981,12 @@ public:
 								// get there.
 								if (entity != nullptr) {
 									entity->orderOfComputation = order;
-									entity->buffer.setDataToReferTo(buffersToUse.data(), buffersToUse.size(), mcc->samplesPerBlockExpected);
+									entity->buffer.setDataToReferTo(buffersToUse.data(), static_cast<int>(buffersToUse.size()), mcc->samplesPerBlockExpected);
 									mcc->playlist.insert(entity);
 									if (entity->type == EntityType::SoundFileProcessor) {
 										SoundFileProcessor* sfp = static_cast<SoundFileProcessor*>(entity);
 										sfp->startClipAtSample = startSample != 0 ? startSample : mcc->sampleCount;
-										sfp->sampleCount = mcc->sampleCount;
+										//sfp->sampleCount = mcc->sampleCount;
 									}
 								}
 							}));
@@ -923,11 +1048,11 @@ public:
 										auto sample = getIntegerInField(obj, "sample");
 										auto type = getStringInField(obj, "type");
 										if (type == "on") {
-											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOn(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOn(static_cast<int>(getIntegerInField(obj, "ch")), static_cast<int>(getIntegerInField(obj, "note")), static_cast<uint8>(getIntegerInField(obj, "vel")))));
 										} else if (type == "off") {
-											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOff(getIntegerInField(obj, "ch"), getIntegerInField(obj, "note"), static_cast<uint8>(getIntegerInField(obj, "vel")))));
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::noteOff(static_cast<int>(getIntegerInField(obj, "ch")), static_cast<int>(getIntegerInField(obj, "note")), static_cast<uint8>(getIntegerInField(obj, "vel")))));
 										} else if (type == "cc") {
-											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::controllerEvent(getIntegerInField(obj, "ch"), getIntegerInField(obj, "ccnum"), static_cast<uint8>(getIntegerInField(obj, "val")))));
+											entity->midiQueue.push_back(std::make_tuple(sample, MidiMessage::controllerEvent(static_cast<int>(getIntegerInField(obj, "ch")), static_cast<int>(getIntegerInField(obj, "ccnum")), static_cast<uint8>(getIntegerInField(obj, "val")))));
 										} else {
 											throw "midi type not understood."s;
 										}
@@ -1033,7 +1158,7 @@ public:
 
 					auto replystring = reply.dump();
 					auto replybuf = replystring.data();
-					int replysize = strlen(replybuf);
+					int replysize = static_cast<int>(strlen(replybuf));
 					connSocket->write(&replysize, 4);
 					connSocket->write(replybuf, replysize);
 
@@ -1058,8 +1183,9 @@ public:
 	TCPServer tcpServer{ this };
 	std::vector<MidiInputDevice*> midiInputDevices;
 	std::array<Entity*, ENTITY_LIMIT> entities;
-	std::array<AudioFormatReader*, FILE_LIMIT> audioFormatReaders;
+	std::array<MemoryMappedAudioFormatReader*, FILE_LIMIT> audioFormatReaders;
 	std::array<AudioBuffer<double>, REALTIMEBUFFER_LIMIT> realtimebuffers;
+	std::array<AudioBuffer<float>, FILEBUFFER_LIMIT> filebuffers;
 
 	std::set<Entity*, std::function<bool(Entity*, Entity*)>> playlist{
 		[](Entity* a, Entity* b) { 
