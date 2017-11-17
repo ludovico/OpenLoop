@@ -345,9 +345,7 @@ struct VolumeProcessorParameter {
 };
 
 struct VolumeProcessor : public Entity {
-	VolumeProcessor(long id) : Entity{ id, EntityType::VolumeProcessor } {
-		
-	}
+	VolumeProcessor(long id) : Entity{ id, EntityType::VolumeProcessor } {}
 
 	void process(int64 sampleCount, int numSamples) {
 		double** bufs = buffer.getArrayOfWritePointers();
