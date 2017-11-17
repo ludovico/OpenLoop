@@ -112,7 +112,13 @@ struct Plugin : public Entity {
 			midibuffer.addEvents(*src, 0, numSamples, 0);
 		}
 
+		// we should probably lock here but let's see.
 		while (!midiQueue.empty() && std::get<0>(midiQueue.front()) < sampleCount) {
+			midibuffer.addEvent(std::get<1>(midiQueue.front()), 0);
+			auto scheduledSample = std::get<0>(midiQueue.front());
+			messageManager->callAsync([=]() {
+				std::cout << "Midi msg too late. Scheduled sample: " << scheduledSample << ", current sample: " << sampleCount << ". Late by " << sampleCount - scheduledSample << " samples.\n";
+			});
 			midiQueue.pop_front();
 		}
 
@@ -550,6 +556,7 @@ public:
 			}
 		}
 		deviceManager.closeAudioDevice();
+		for (auto midiinputdevice : midiInputDevices) { delete midiinputdevice; }
 		tcpServer.signalThreadShouldExit();
 		tcpServer.serverSocket.close();
 		tcpServer.stopThread(50);
@@ -609,13 +616,21 @@ public:
 		// query the audio callback function queue - these functions set up the connections and directs what calculations to perform
 		
 		mutex_lock.lock();
+		// these messages tell the program to calculate / stop calculating an Entity. Removal of an Entity is done here, and only here.
+		// it is up to the provided function to make use of bufferPos.
+		// ... these messages came too late ... (bufferPos is thus negative)
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount) {
+			auto scheduledSample = std::get<0>(audioCallbackFunctionQueue.top());
 			auto func = std::get<1>(audioCallbackFunctionQueue.top());
-			int bufferPos = static_cast<int>(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
+			int bufferPos = static_cast<int>(scheduledSample - sampleCount);
 			func(bufferPos);
 			audioCallbackFunctionQueue.pop();
+			messageManager->callAsync([=]() {
+				std::cout << "Calculate/removal msg too late. Scheduled sample: " << scheduledSample << ", current sample: " << sampleCount << ". Late by " << sampleCount - scheduledSample << " samples.\n";
+			});
 		}
 
+		// ... these messages are sample-accurate ... (bufferPos is within the sample buffer size)
 		while (!audioCallbackFunctionQueue.empty() && std::get<0>(audioCallbackFunctionQueue.top()) < sampleCount + bufferToFill.numSamples) {
 			auto func = std::get<1>(audioCallbackFunctionQueue.top());
 			int bufferPos = static_cast<int>(std::get<0>(audioCallbackFunctionQueue.top()) - sampleCount);
@@ -859,6 +874,7 @@ public:
 							int length = static_cast<int>(afr->lengthInSamples);
 							mcc->filebuffers[id].setSize(afr->numChannels, length, false, false, true);
 							afr->read(&mcc->filebuffers[id], 0, length, 0, true, true);
+							delete afr;
 							reply["file-id"] = id;
 							/*MemoryMappedAudioFormatReader* afr = waf.createMemoryMappedReader(getValidFile(msg, "path"));
 							if (afr == nullptr) {
