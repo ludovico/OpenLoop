@@ -20,7 +20,7 @@ using namespace std::string_literals;
 
 constexpr int ENTITY_LIMIT = 100000; // 100.000 * 8 = 800 kB
 constexpr int FILE_LIMIT = 100000; // 100.000 * 8 = 800 kB
-constexpr int REALTIMEBUFFER_LIMIT = 10000; // if buffersize=256, 10.000*256*8 = 20 MB
+constexpr int REALTIMEBUFFER_LIMIT = 20000; // if buffersize=256, 10.000*256*8 = 20 MB
 constexpr int FILEBUFFER_LIMIT = 10000;
 
 int entityId = -1;
@@ -557,6 +557,8 @@ public:
 		}
 		deviceManager.closeAudioDevice();
 		for (auto midiinputdevice : midiInputDevices) { delete midiinputdevice; }
+		delete audioInterfaceInput;
+		delete audioInterfaceOutput;
 		tcpServer.signalThreadShouldExit();
 		tcpServer.serverSocket.close();
 		tcpServer.stopThread(50);
@@ -601,6 +603,13 @@ public:
 		initialized = true;
 	}
 
+	// This is the main loop - slow operations are best deferred to other threads, where possible.
+	// On MSVC, the debug version of this code is incredibly slow compared to the release version,
+	// this is related to the priority queue's pop() method being incredibly slow even for small
+	// queue sizes. In release, the queue can have at least 70.000 messages without disturbing
+	// the audio stability, and can play 250 stereo audio tracks at the same time.
+	// Further performance checks should reveal the upper bound, but this is enough for my needs, for now.
+	// Right now, it seems like the (TCP-based) messaging link might be the biggest bottleneck.
 	void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
 		jassert(bufferToFill.numSamples == samplesPerBlockExpected);
 		
