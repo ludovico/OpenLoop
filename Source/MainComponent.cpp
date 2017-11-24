@@ -714,8 +714,8 @@ public:
 
 		double getFloatInField(nlohmann::json& msg, const std::string& field) {
 			checkValidField(msg, field);
-			if (!msg[field].is_number_float()) {
-				throw "field \"" + field + "\" must be a floating point number.";
+			if (!msg[field].is_number()) {
+				throw "field \"" + field + "\" must be a number.";
 			}
 			return msg[field];
 		}
