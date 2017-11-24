@@ -18,7 +18,7 @@
 
 using namespace std::string_literals;
 
-constexpr int ENTITY_LIMIT = 100000; // 100.000 * 8 = 800 kB
+constexpr int ENTITY_LIMIT = 1000000; // 100.000 * 8 = 800 kB
 constexpr int FILE_LIMIT = 100000; // 100.000 * 8 = 800 kB
 constexpr int REALTIMEBUFFER_LIMIT = 20000; // if buffersize=256, 10.000*256*8 = 20 MB
 constexpr int FILEBUFFER_LIMIT = 10000;
